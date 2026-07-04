@@ -12,6 +12,11 @@ teleportation. The whole thing ships as **one self-contained 258 KB HTML file**.
 Open `mf_proto_live_steel.html` in a browser. That's it — WASM kernel and font
 are embedded.
 
+For interactive text and parameter work, open `live_steel_panel.html` next to the
+standalone. The panel is a separate workshop shell: it can rebuild text fields,
+edit per-letter layout, save presets, and export PNGs without modifying canonical
+proof evidence. See `README_PANEL.md`.
+
 ## Build from source
 
 ```bash
@@ -58,6 +63,8 @@ morph continuity, sim-only perf p95 ≤ 10 ms/step (measured ~5.4 ms).
 - `causal_audit.json` + `tools/audit_causal_letters.cjs` — deep causality audit
 - `gate_config.json` — versioned gate thresholds
 - `CANON.md` — canonical host definition, identity ladder, open items
+- `live_steel_panel.html` + `tools/smoke_live_steel_panel.cjs` — interactive
+  workshop and machine smoke verifier
 
 ## Status
 

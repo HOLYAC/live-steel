@@ -6,4 +6,5 @@ __pycache__/
 mf_live_steel_review_pack/
 live_steel_*.zip
 *.tmp
+.tmp_live_steel_panel_*
 review_pack/

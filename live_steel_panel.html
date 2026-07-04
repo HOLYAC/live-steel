@@ -1,0 +1,1026 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Live Steel Panel</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #050606;
+    --panel: rgba(10, 12, 12, 0.86);
+    --panel-strong: rgba(17, 20, 20, 0.94);
+    --ink: #e6e7df;
+    --muted: #97a09a;
+    --line: rgba(210, 225, 210, 0.16);
+    --hot: #d9dfcc;
+    --bad: #ffb6a4;
+  }
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: radial-gradient(circle at 45% 40%, #141716 0, var(--bg) 52%, #000 100%);
+    color: var(--ink);
+    font: 13px/1.35 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  iframe {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #050606;
+  }
+  .boot {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+  }
+  .boot-card {
+    width: min(760px, calc(100vw - 48px));
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    background: linear-gradient(145deg, rgba(17,20,20,.94), rgba(7,8,8,.92));
+    box-shadow: 0 30px 90px rgba(0,0,0,.48), inset 0 1px 0 rgba(255,255,255,.04);
+    padding: 22px;
+  }
+  h1 {
+    margin: 0 0 6px;
+    font-size: 24px;
+    letter-spacing: .02em;
+  }
+  p { margin: 8px 0; color: var(--muted); }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 16px; }
+  button, .file-button {
+    border: 1px solid rgba(230, 231, 223, .22);
+    border-radius: 999px;
+    background: rgba(230,231,223,.08);
+    color: var(--ink);
+    padding: 9px 14px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  button:hover, .file-button:hover { background: rgba(230,231,223,.14); }
+  input[type=file] { display: none; }
+  code {
+    color: var(--hot);
+    background: rgba(255,255,255,.06);
+    padding: 1px 5px;
+    border-radius: 6px;
+  }
+  .status { min-height: 20px; margin-top: 14px; color: var(--muted); }
+  .status.bad { color: var(--bad); }
+</style>
+<div class="boot" id="boot">
+  <div class="boot-card">
+    <h1>Live Steel Panel</h1>
+    <p>Separate workshop shell for the ratified standalone. It leaves <code>mf_proto_live_steel.html</code>, proof files, and CI evidence untouched, then injects the control panel in memory.</p>
+    <p>Best path: keep this file next to <code>mf_proto_live_steel.html</code> and serve/open it. If browser file rules block auto-load, pick the standalone manually.</p>
+    <div class="row">
+      <button id="auto">Load same-folder standalone</button>
+      <label class="file-button" for="pick">Pick mf_proto_live_steel.html</label>
+      <input id="pick" type="file" accept=".html,text/html">
+    </div>
+    <div class="status" id="status">Ready.</div>
+  </div>
+</div>
+<script id="live-steel-panel-injection" type="text/plain">
+(function liveSteelPanel(){
+  'use strict';
+
+  const PANEL_VERSION = 'live-steel-panel-v2';
+  const STORE_KEY = 'live-steel-panel-state-v1';
+  const DEFAULT_STATE = {
+    text: 'ZALUPA',
+    seed: 2246,
+    mode: 'locked',
+    autoLock: true,
+    lockMs: 5480,
+    render: {
+      glints: true,
+      shadows: true,
+      dust: true,
+      trails: true,
+      causal: true,
+      brightness: 1,
+      contrast: 1,
+      backgroundFade: 0.62,
+      debug: 0
+    },
+    textStyle: {
+      uppercase: true,
+      scale: 1,
+      tracking: 1,
+      wordGap: 1,
+      lineGap: 1,
+      weight: 900,
+      x: 0,
+      y: 0,
+      lineBreak: 'auto'
+    },
+    selectedLetter: 0,
+    letters: []
+  };
+
+  const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, Number(value) || 0));
+  const deepClone = value => JSON.parse(JSON.stringify(value));
+  const mergeDeep = (base, extra) => {
+    const out = Array.isArray(base) ? base.slice() : Object.assign({}, base);
+    if (!extra || typeof extra !== 'object') return out;
+    for (const [key, value] of Object.entries(extra)) {
+      if (value && typeof value === 'object' && !Array.isArray(value) && base[key] && typeof base[key] === 'object' && !Array.isArray(base[key])) {
+        out[key] = mergeDeep(base[key], value);
+      } else {
+        out[key] = Array.isArray(value) ? value.map(item => (item && typeof item === 'object' ? Object.assign({}, item) : item)) : value;
+      }
+    }
+    return out;
+  };
+
+  let state = mergeDeep(DEFAULT_STATE, loadStoredState());
+  let lockTimer = 0;
+  let selectedEls = {};
+  let statusEl = null;
+  let letterSelect = null;
+  let compact = false;
+  let started = false;
+
+  function loadStoredState(){
+    try {
+      if (window.__LS_BOOT_PRESET) return JSON.parse(atob(window.__LS_BOOT_PRESET));
+    } catch (_) {}
+    try {
+      const hash = location.hash && location.hash.startsWith('#preset=') ? decodeURIComponent(location.hash.slice(8)) : '';
+      if (hash) return JSON.parse(atob(hash));
+    } catch (_) {}
+    try { return JSON.parse(localStorage.getItem(STORE_KEY) || 'null') || {}; }
+    catch (_) { return {}; }
+  }
+
+  function saveStoredState(){
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+    catch (_) {}
+  }
+
+  function preparedText(raw = state.text){
+    let text = String(raw || '').replace(/\r\n?/g, '\n').trim();
+    if (!text) text = 'LIVE STEEL';
+    if (state.textStyle.uppercase) text = text.toUpperCase();
+    return text;
+  }
+
+  function currentPhrases(text = preparedText()){
+    const cap = (typeof MAX_PHRASES === 'number' && MAX_PHRASES > 0) ? MAX_PHRASES : 4;
+    const phrases = text.split('|').map(part => part.trim()).filter(Boolean).slice(0, cap);
+    return phrases.length ? phrases : ['LIVE STEEL'];
+  }
+
+  function isMultiPhrase(){
+    return currentPhrases().length > 1;
+  }
+
+  function visibleChars(text = currentPhrases()[0]){
+    return Array.from(text).filter(ch => ch !== ' ' && ch !== '\n' && ch !== '\t' && ch !== '|');
+  }
+
+  function defaultLetter(index, ch){
+    return { index, char: ch, scale: 1, x: 0, y: 0, rotation: 0, spacing: 0, density: 1, hidden: false };
+  }
+
+  function ensureLetters(){
+    const chars = visibleChars();
+    const old = Array.isArray(state.letters) ? state.letters : [];
+    state.letters = chars.map((ch, index) => Object.assign(defaultLetter(index, ch), old[index] || {}, { index, char: ch }));
+    if (!state.letters.length) state.selectedLetter = 0;
+    state.selectedLetter = clamp(state.selectedLetter, 0, Math.max(0, state.letters.length - 1)) | 0;
+  }
+
+  function setStatus(text, kind = ''){
+    if (!statusEl) return;
+    statusEl.textContent = text;
+    statusEl.dataset.kind = kind;
+  }
+
+  function isReady(){
+    try { return !!(wasm && OUT_STRIDE && PERF_STRIDE && SLOT_STRIDE && typeof views === 'function'); }
+    catch (_) { return false; }
+  }
+
+  function setRenderOptions(){
+    try {
+      renderOptions = Object.assign({}, DEFAULT_RENDER_OPTIONS, {
+        glints: !!state.render.glints,
+        shadows: !!state.render.shadows,
+        dust: !!state.render.dust,
+        motion: !!state.render.trails,
+        causal: !!state.render.causal,
+        bodies: true
+      });
+      cv.style.filter = 'brightness(' + clamp(state.render.brightness, 0.35, 2.4).toFixed(3) + ') contrast(' + clamp(state.render.contrast, 0.35, 2.4).toFixed(3) + ')';
+      window.__debugField = state.render.debug | 0;
+    } catch (_) {}
+  }
+
+  try {
+    fadeBackground = function panelFadeBackground(){
+      x.globalCompositeOperation = 'source-over';
+      const fade = clamp(state.render.backgroundFade, 0.04, 0.94);
+      x.fillStyle = 'rgba(5,6,6,' + fade.toFixed(3) + ')';
+      x.fillRect(0, 0, W, H);
+      const g = x.createRadialGradient(W * 0.42, H * 0.53, 0, W * 0.42, H * 0.53, Math.max(W, H) * 0.64);
+      g.addColorStop(0, 'rgba(28,29,25,0.030)');
+      g.addColorStop(0.62, 'rgba(8,9,8,0.026)');
+      g.addColorStop(1, 'rgba(0,0,0,0.22)');
+      x.fillStyle = g;
+      x.fillRect(0, 0, W, H);
+    };
+  } catch (_) {}
+
+  function panelPlanTextRaster(text, g){
+    const glyphText = text;
+    const manual = state.textStyle.lineBreak === 'manual';
+    const oneLine = state.textStyle.lineBreak === 'single';
+    const cleanWords = glyphText.split(/\s+/).filter(Boolean);
+    let lines;
+    if (manual) {
+      lines = glyphText.split('\n').map(line => line.trim()).filter(Boolean);
+      if (!lines.length) lines = ['LIVE STEEL'];
+    } else if (oneLine) {
+      lines = [glyphText.replace(/\s+/g, ' ')];
+    } else {
+      lines = [glyphText.replace(/\s+/g, ' ')];
+      if (glyphText.length > 14 && cleanWords.length > 1) {
+        let best = 1;
+        let bestScore = 1e9;
+        for (let k = 1; k < cleanWords.length; k++) {
+          const a = cleanWords.slice(0, k).join(' ');
+          const b = cleanWords.slice(k).join(' ');
+          const score = Math.abs(a.length - b.length) + Math.max(a.length, b.length) * 0.08;
+          if (score < bestScore) { best = k; bestScore = score; }
+        }
+        lines = [cleanWords.slice(0, best).join(' '), cleanWords.slice(best).join(' ')];
+      }
+    }
+
+    const maxLineLen = Math.max(1, ...lines.map(line => Array.from(line).length));
+    const style = state.textStyle;
+    const targetWidth = FIELD_W * (lines.length > 1 ? 0.54 : 0.86);
+    let fs = Math.min(FIELD_H * (lines.length > 1 ? 0.30 : 0.32), targetWidth / (maxLineLen * 0.48));
+    fs *= clamp(style.scale, 0.25, 2.2);
+    const weight = clamp(style.weight, 100, 1000) | 0;
+    const setFont = () => { g.font = weight + ' ' + fs + 'px "LiveSteelProof","Arial Black","Segoe UI",Arial,sans-serif'; };
+    setFont();
+    let tracking = fs * 0.055 * clamp(style.tracking, -1.5, 4);
+    let wordGap = fs * 0.10 * clamp(style.wordGap, 0, 4);
+
+    const measureChars = chars => {
+      let width = 0;
+      for (const ch of chars) width += g.measureText(ch).width + (ch === ' ' ? wordGap : 0);
+      return width + Math.max(0, chars.length - 1) * tracking;
+    };
+    let measured = Math.max(...lines.map(line => measureChars(Array.from(line))));
+    if (measured > targetWidth * 1.08) {
+      fs *= (targetWidth * 1.08) / measured;
+      setFont();
+      tracking = fs * 0.055 * clamp(style.tracking, -1.5, 4);
+      wordGap = fs * 0.10 * clamp(style.wordGap, 0, 4);
+      measured = Math.max(...lines.map(line => measureChars(Array.from(line))));
+    }
+
+    const charEdges = chars => {
+      const edges = [0];
+      let cursor = 0;
+      let visibleIndex = 0;
+      for (let i = 0; i < chars.length; i++) {
+        const ch = chars[i];
+        const letter = (ch === ' ' || ch === '\t') ? null : state.letters[visibleIndex++];
+        cursor += g.measureText(ch).width + (ch === ' ' ? wordGap : 0);
+        if (i < chars.length - 1) cursor += tracking;
+        if (letter) cursor += clamp(letter.spacing, -18, 24);
+        edges.push(cursor);
+      }
+      return edges;
+    };
+
+    const lineGap = fs * 0.92 * clamp(style.lineGap, 0.3, 2.6);
+    let globalVisibleIndex = 0;
+    const linePlans = lines.map((line, i) => {
+      const chars = Array.from(line);
+      const edges = charEdges(chars);
+      const width = edges[edges.length - 1];
+      const y = FIELD_H / 2 + (i - (lines.length - 1) / 2) * lineGap + clamp(style.y, -80, 80);
+      const x0 = FIELD_W / 2 - width / 2 + clamp(style.x, -120, 120);
+      const letters = chars.map(ch => {
+        const letterIndex = (ch === ' ' || ch === '\t') ? -1 : globalVisibleIndex++;
+        return { ch, letterIndex };
+      });
+      return { line, chars, letters, y, width, x0, x1: x0 + width, edges };
+    });
+    return { lines, linePlans, fs, lineGap, targetWidth, tracking, wordGap };
+  }
+
+  function rasterFromCanvas(g){
+    const im = g.getImageData(0, 0, FIELD_W, FIELD_H).data;
+    const a = new Float32Array(FIELD_MAX);
+    let minX = FIELD_W, maxX = 0, minY = FIELD_H, maxY = 0, mass = 0;
+    for (let yy = 0; yy < FIELD_H; yy++) for (let xx = 0; xx < FIELD_W; xx++) {
+      const v = im[(yy * FIELD_W + xx) * 4] / 255;
+      const aa = v < 0.02 ? 0 : Math.min(1, Math.pow(v, 0.82));
+      a[yy * FIELD_W + xx] = aa;
+      if (aa > 0.12) {
+        if (xx < minX) minX = xx;
+        if (xx > maxX) maxX = xx;
+        if (yy < minY) minY = yy;
+        if (yy > maxY) maxY = yy;
+        mass += aa;
+      }
+    }
+    if (mass <= 0) minX = maxX = FIELD_W / 2, minY = maxY = FIELD_H / 2;
+    return { alpha: a, bounds: { minX, maxX, minY, maxY, mass } };
+  }
+
+  function panelRasterAlpha(text){
+    ensureLetters();
+    const o = document.createElement('canvas');
+    o.width = FIELD_W;
+    o.height = FIELD_H;
+    const g = o.getContext('2d', { willReadFrequently: true });
+    const glyphText = preparedText(text);
+    const plan = panelPlanTextRaster(glyphText, g);
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, FIELD_W, FIELD_H);
+    g.fillStyle = '#fff';
+    g.textAlign = 'left';
+    g.textBaseline = 'middle';
+
+    for (const line of plan.linePlans) {
+      for (let ci = 0; ci < line.chars.length; ci++) {
+        const ch = line.chars[ci];
+        if (ch === ' ' || ch === '\t') continue;
+        const letterIndex = line.letters[ci].letterIndex;
+        const override = isMultiPhrase()
+          ? defaultLetter(letterIndex, ch)
+          : (state.letters[letterIndex] || defaultLetter(letterIndex, ch));
+        if (override.hidden) continue;
+        const rawX = line.x0 + line.edges[ci];
+        const w = Math.max(0.1, g.measureText(ch).width);
+        const cx = rawX + w * 0.5;
+        const density = clamp(override.density, 0, 2.5);
+        const scale = clamp(override.scale, 0.15, 3.0);
+        g.save();
+        g.globalAlpha = Math.min(1, density);
+        g.translate(cx + clamp(override.x, -80, 80), line.y + clamp(override.y, -80, 80));
+        g.rotate(clamp(override.rotation, -180, 180) * Math.PI / 180);
+        g.scale(scale, scale);
+        const extraPasses = density > 1 ? Math.min(3, Math.ceil((density - 1) * 2)) : 0;
+        for (let pass = 0; pass <= extraPasses; pass++) {
+          const nudge = pass * 0.22;
+          for (const [ox, oy] of INK_OFFSETS) g.fillText(ch, -w * 0.5 + ox + nudge, oy - nudge);
+        }
+        g.restore();
+      }
+    }
+    return rasterFromCanvas(g);
+  }
+
+  try {
+    rasterAlpha = panelRasterAlpha;
+    planTextRaster = panelPlanTextRaster;
+  } catch (error) {
+    console.warn('[Live Steel Panel] raster override failed', error);
+  }
+
+  try {
+    const templateRebuild = rebuild;
+    rebuild = function panelRebuild(){
+      templateRebuild();
+      try {
+        wasm.sim_reset_seed(state.seed | 0);
+        wasm.sim_step(0);
+        draw();
+      } catch (_) {}
+    };
+  } catch (error) {
+    console.warn('[Live Steel Panel] rebuild override failed', error);
+  }
+
+  function applyText(reset = true){
+    ensureLetters();
+    const phrases = currentPhrases();
+    const phrase = phrases.join(' | ');
+    try {
+      PHRASES.length = 0;
+      for (const item of phrases) PHRASES.push(item);
+    } catch (error) {
+      setStatus('Could not rewrite PHRASES: ' + error.message, 'bad');
+      return;
+    }
+    updatePerLetterAvailability();
+    saveStoredState();
+    updateLetterSelect();
+    if (!isReady()) {
+      setStatus('WASM booting. Text queued: ' + phrase);
+      return;
+    }
+    clearTimeout(lockTimer);
+    setRenderOptions();
+    try {
+      running = false;
+      resizeCanvas();
+      wasm.sim_config(PHRASES.length, W, H);
+      loadFields();
+      clearCanvasHard();
+      wasm.sim_reset_seed(state.seed | 0);
+      wasm.sim_step(0);
+      perf = 0;
+      draw();
+      if (state.mode === 'live' || state.mode === 'morph' || state.mode === 'locked') {
+        running = true;
+        last = performance.now();
+      }
+      if (state.autoLock && state.mode === 'locked') scheduleAutoLock();
+      if (state.mode === 'morph' && phrases.length === 1) {
+        setStatus('Applied: ' + phrase + ' · seed ' + (state.seed | 0) + ' — morph needs 2+ phrases, separate with |');
+      } else {
+        setStatus('Applied: ' + (phrases.length > 1 ? phrases.length + ' phrases: ' : '') + phrase + ' · seed ' + (state.seed | 0));
+      }
+    } catch (error) {
+      setStatus('Apply failed: ' + error.message, 'bad');
+      console.error(error);
+    }
+  }
+
+  function scheduleAutoLock(){
+    clearTimeout(lockTimer);
+    const ms = Math.max(0, state.lockMs | 0);
+    lockTimer = setTimeout(() => {
+      try {
+        running = false;
+        draw();
+        setStatus('Locked at ' + ms + ' ms.');
+      } catch (_) {}
+    }, ms);
+  }
+
+  function play(){
+    clearTimeout(lockTimer);
+    try { running = true; last = performance.now(); setStatus('Live.'); }
+    catch (_) {}
+  }
+
+  function pause(label = 'Paused.'){
+    clearTimeout(lockTimer);
+    try { running = false; draw(); setStatus(label); }
+    catch (_) {}
+  }
+
+  function exportPng(){
+    try {
+      const a = document.createElement('a');
+      const slug = preparedText().toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-|-$/g, '').slice(0, 48) || 'live-steel';
+      a.download = 'live-steel-' + slug + '.png';
+      a.href = cv.toDataURL('image/png');
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setStatus('PNG exported.');
+    } catch (error) { setStatus('PNG export failed: ' + error.message, 'bad'); }
+  }
+
+  function presetLive(){
+    state.mode = 'live';
+    state.autoLock = false;
+    state.render = Object.assign({}, state.render, { glints: true, shadows: true, dust: true, trails: true, causal: true, brightness: 1, contrast: 1, backgroundFade: 0.62, debug: 0 });
+    syncInputs();
+    applyText();
+  }
+
+  function presetLocked(){
+    state.mode = 'locked';
+    state.autoLock = true;
+    state.lockMs = 5480;
+    state.render = Object.assign({}, state.render, { glints: true, shadows: true, dust: true, trails: true, causal: true, brightness: 1, contrast: 1, backgroundFade: 0.62, debug: 0 });
+    syncInputs();
+    applyText();
+  }
+
+  function presetPoster(){
+    state.mode = 'locked';
+    state.autoLock = true;
+    state.lockMs = 6200;
+    state.render = Object.assign({}, state.render, { glints: true, shadows: true, dust: false, trails: false, causal: false, brightness: 1.08, contrast: 1.16, backgroundFade: 0.76, debug: 0 });
+    syncInputs();
+    applyText();
+  }
+
+  function exportPreset(){
+    ensureLetters();
+    const json = JSON.stringify(state, null, 2);
+    const blob = new Blob([json + '\n'], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'live-steel-preset.json';
+    document.body.appendChild(a);
+    a.click();
+    URL.revokeObjectURL(a.href);
+    a.remove();
+    setStatus('Preset JSON exported.');
+  }
+
+  function legacyCopy(text){
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) {}
+    area.remove();
+    return ok;
+  }
+
+  async function copyText(text){
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch (_) { return legacyCopy(text); }
+  }
+
+  async function copyPreset(){
+    ensureLetters();
+    const json = JSON.stringify(state, null, 2);
+    setStatus((await copyText(json)) ? 'Preset JSON copied to clipboard.' : 'Clipboard blocked — use Save instead.', '');
+  }
+
+  async function copyPresetLink(){
+    ensureLetters();
+    const hash = '#preset=' + encodeURIComponent(btoa(JSON.stringify(state)));
+    let base = '';
+    try {
+      const holder = (window.parent && window.parent !== window) ? window.parent : window;
+      if (/^https?:/.test(holder.location.href)) base = holder.location.href.split('#')[0];
+    } catch (_) {}
+    if (!base) { setStatus('Shareable link needs the panel served over http(s).', 'bad'); return; }
+    setStatus((await copyText(base + hash)) ? 'Shareable preset link copied.' : 'Clipboard blocked — copy from address bar after reload.', '');
+  }
+
+  async function importPresetFile(file){
+    try {
+      const next = JSON.parse(await file.text());
+      state = mergeDeep(DEFAULT_STATE, next);
+      ensureLetters();
+      syncInputs();
+      applyText();
+    } catch (error) { setStatus('Preset load failed: ' + error.message, 'bad'); }
+  }
+
+  function setSelectedLetter(index){
+    ensureLetters();
+    state.selectedLetter = clamp(index, 0, Math.max(0, state.letters.length - 1)) | 0;
+    updateLetterInputs();
+    if (letterSelect) letterSelect.value = String(state.selectedLetter);
+    saveStoredState();
+  }
+
+  function updatePerLetterAvailability(){
+    const section = document.getElementById('ls-letter-section');
+    if (!section) return;
+    const multi = isMultiPhrase();
+    section.classList.toggle('is-disabled', multi);
+    const note = section.querySelector('[data-role="letter-note"]');
+    if (note) note.textContent = multi
+      ? 'Per-letter is single-phrase only — remove | separators to edit letters.'
+      : 'Pick from the list or click a glyph on canvas. Overrides are applied during JS raster/layout, before WASM rebuilds the metal field.';
+  }
+
+  function updateLetterSelect(){
+    if (!letterSelect) return;
+    ensureLetters();
+    updatePerLetterAvailability();
+    const current = String(state.selectedLetter | 0);
+    letterSelect.innerHTML = '';
+    state.letters.forEach((letter, index) => {
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = String(index + 1).padStart(2, '0') + ' · ' + letter.char;
+      letterSelect.appendChild(option);
+    });
+    if (!state.letters.length) {
+      const option = document.createElement('option');
+      option.value = '0';
+      option.textContent = 'no letters';
+      letterSelect.appendChild(option);
+    }
+    letterSelect.value = current;
+    updateLetterInputs();
+  }
+
+  function currentLetter(){
+    ensureLetters();
+    return state.letters[state.selectedLetter | 0] || defaultLetter(0, '');
+  }
+
+  function updateLetterInputs(){
+    const letter = currentLetter();
+    for (const [key, el] of Object.entries(selectedEls)) {
+      if (key === 'hidden') el.checked = !!letter.hidden;
+      else el.value = letter[key] ?? 0;
+      const out = document.querySelector('[data-out="' + key + '"]');
+      if (out) out.textContent = el.type === 'range' ? Number(el.value).toFixed(key === 'rotation' || key === 'x' || key === 'y' || key === 'spacing' ? 0 : 2) : el.value;
+    }
+  }
+
+  function syncInputs(){
+    const root = document.getElementById('ls-panel');
+    if (!root) return;
+    root.querySelector('[data-bind="text"]').value = state.text;
+    for (const input of root.querySelectorAll('[data-bind]')) {
+      const path = input.dataset.bind;
+      if (path === 'text') continue;
+      const value = getPath(state, path);
+      if (input.type === 'checkbox') input.checked = !!value;
+      else input.value = value;
+      updateOut(input);
+    }
+    updateLetterSelect();
+  }
+
+  function getPath(obj, path){
+    return path.split('.').reduce((acc, key) => acc && acc[key], obj);
+  }
+
+  function setPath(obj, path, value){
+    const bits = path.split('.');
+    let target = obj;
+    for (let i = 0; i < bits.length - 1; i++) target = target[bits[i]];
+    target[bits[bits.length - 1]] = value;
+  }
+
+  function updateOut(input){
+    const out = input.closest('label') && input.closest('label').querySelector('output');
+    if (out) out.textContent = input.type === 'checkbox' ? (input.checked ? 'on' : 'off') : input.value;
+  }
+
+  function bindPanel(root){
+    root.addEventListener('input', event => {
+      const input = event.target.closest('[data-bind]');
+      if (!input) return;
+      const path = input.dataset.bind;
+      let value;
+      if (input.type === 'checkbox') value = input.checked;
+      else if (input.type === 'number' || input.type === 'range') value = Number(input.value);
+      else value = input.value;
+      setPath(state, path, value);
+      updateOut(input);
+      if (path === 'text' || path.startsWith('textStyle.')) {
+        ensureLetters();
+        updateLetterSelect();
+      }
+      if (path.startsWith('render.')) {
+        setRenderOptions();
+        try { draw(); } catch (_) {}
+      }
+      saveStoredState();
+    });
+    root.addEventListener('change', event => {
+      const input = event.target;
+      if (input.matches('[data-apply-on-change="true"]')) applyText();
+      if (input.id === 'ls-load-preset' && input.files && input.files[0]) importPresetFile(input.files[0]);
+    });
+    root.addEventListener('click', event => {
+      const action = event.target.closest('[data-action]') && event.target.closest('[data-action]').dataset.action;
+      if (!action) return;
+      if (action === 'apply') applyText();
+      if (action === 'reset') applyText(true);
+      if (action === 'play') play();
+      if (action === 'pause') pause();
+      if (action === 'lock') pause('Locked manually.');
+      if (action === 'png') exportPng();
+      if (action === 'preset-live') presetLive();
+      if (action === 'preset-locked') presetLocked();
+      if (action === 'preset-poster') presetPoster();
+      if (action === 'preset-export') exportPreset();
+      if (action === 'preset-copy') copyPreset();
+      if (action === 'preset-link') copyPresetLink();
+      if (action === 'seed-random') {
+        state.seed = (Math.random() * 0xffffffff) | 0;
+        syncInputs();
+        applyText();
+      }
+      if (action === 'compact') {
+        compact = !compact;
+        root.classList.toggle('is-compact', compact);
+      }
+      if (action === 'letter-reset') {
+        const index = state.selectedLetter | 0;
+        const ch = state.letters[index] ? state.letters[index].char : '';
+        state.letters[index] = defaultLetter(index, ch);
+        updateLetterInputs();
+        applyText();
+      }
+    });
+
+    letterSelect = root.querySelector('#ls-letter-select');
+    letterSelect.addEventListener('change', () => setSelectedLetter(Number(letterSelect.value)));
+
+    selectedEls = {};
+    for (const input of root.querySelectorAll('[data-letter]')) {
+      selectedEls[input.dataset.letter] = input;
+      input.addEventListener('input', () => {
+        const key = input.dataset.letter;
+        const letter = currentLetter();
+        letter[key] = input.type === 'checkbox' ? input.checked : Number(input.value);
+        updateOut(input);
+        const out = document.querySelector('[data-out="' + key + '"]');
+        if (out) out.textContent = input.type === 'checkbox' ? (input.checked ? 'hidden' : 'shown') : input.value;
+        saveStoredState();
+      });
+      input.addEventListener('change', () => applyText());
+    }
+
+    cv.addEventListener('click', event => {
+      const hit = letterAtEvent(event);
+      if (hit >= 0) setSelectedLetter(hit);
+    });
+  }
+
+  function letterAtEvent(event){
+    if (isMultiPhrase()) return -1;
+    try {
+      const rect = cv.getBoundingClientRect();
+      const fx = (event.clientX - rect.left) / Math.max(1, rect.width) * FIELD_W;
+      const fy = (event.clientY - rect.top) / Math.max(1, rect.height) * FIELD_H;
+      const probe = document.createElement('canvas');
+      probe.width = FIELD_W;
+      probe.height = FIELD_H;
+      const g = probe.getContext('2d');
+      const plan = panelPlanTextRaster(preparedText(), g);
+      for (const line of plan.linePlans) {
+        if (fy < line.y - plan.fs * 0.62 || fy > line.y + plan.fs * 0.62) continue;
+        for (let ci = 0; ci < line.chars.length; ci++) {
+          const info = line.letters[ci];
+          if (!info || info.letterIndex < 0) continue;
+          const letter = state.letters[info.letterIndex] || {};
+          const x0 = line.x0 + line.edges[ci] + (letter.x || 0) - 4;
+          const x1 = line.x0 + line.edges[ci + 1] + (letter.x || 0) + 4;
+          const y0 = line.y + (letter.y || 0) - plan.fs * 0.7;
+          const y1 = line.y + (letter.y || 0) + plan.fs * 0.7;
+          if (fx >= x0 && fx <= x1 && fy >= y0 && fy <= y1) return info.letterIndex;
+        }
+      }
+    } catch (_) {}
+    return -1;
+  }
+
+  function installStyles(){
+    const style = document.createElement('style');
+    style.textContent = `
+#ls-panel{position:fixed;left:14px;top:14px;z-index:20;width:min(390px,calc(100vw - 28px));max-height:calc(100vh - 28px);overflow:auto;color:#e7e8dd;background:rgba(9,11,11,.82);border:1px solid rgba(220,235,220,.17);border-radius:18px;box-shadow:0 18px 70px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.05);backdrop-filter:blur(18px);font:12px/1.35 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;scrollbar-color:rgba(230,231,223,.28) transparent}#ls-panel *{box-sizing:border-box}#ls-panel header{position:sticky;top:0;z-index:1;display:flex;gap:10px;align-items:center;justify-content:space-between;padding:12px 12px 9px;background:linear-gradient(rgba(11,13,13,.96),rgba(11,13,13,.82));border-bottom:1px solid rgba(220,235,220,.10);border-radius:18px 18px 0 0}#ls-panel h2{margin:0;font-size:13px;letter-spacing:.10em;text-transform:uppercase}#ls-panel .sub{color:#9ba49c;font-size:11px}#ls-panel .body{padding:12px;display:grid;gap:10px}#ls-panel section{border:1px solid rgba(220,235,220,.11);border-radius:14px;background:rgba(255,255,255,.035);padding:10px;display:grid;gap:8px}#ls-panel h3{margin:0;color:#c9d0c5;font-size:11px;letter-spacing:.08em;text-transform:uppercase}#ls-panel textarea,#ls-panel input,#ls-panel select{width:100%;border:1px solid rgba(220,235,220,.16);border-radius:10px;background:rgba(0,0,0,.24);color:#e7e8dd;padding:7px 8px;font:inherit}#ls-panel textarea{min-height:54px;resize:vertical}#ls-panel input[type=range]{padding:0;border:0;background:transparent}#ls-panel label{display:grid;gap:4px;color:#abb5ac}#ls-panel .inline{display:grid;grid-template-columns:1fr 86px;gap:8px;align-items:center}#ls-panel .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}#ls-panel .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}#ls-panel .checks{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px}#ls-panel .checks label{display:flex;align-items:center;gap:6px;white-space:nowrap}#ls-panel .checks input{width:auto}#ls-panel output{justify-self:end;color:#eef0e2;font-variant-numeric:tabular-nums}#ls-panel button,#ls-panel .file-lite{border:1px solid rgba(230,231,223,.20);border-radius:999px;background:rgba(230,231,223,.075);color:#eef0e2;padding:7px 10px;font-weight:750;cursor:pointer;text-align:center}#ls-panel button:hover,#ls-panel .file-lite:hover{background:rgba(230,231,223,.14)}#ls-panel .primary{background:rgba(222,229,203,.15)}#ls-panel .status{color:#aab4ac;min-height:16px;font-variant-numeric:tabular-nums}#ls-panel .status[data-kind=bad]{color:#ffb6a4}#ls-panel .hidden-file{display:none}#ls-panel.is-compact{width:242px}#ls-panel.is-compact .body{display:none}#ls-panel small{color:#88928b}#ls-panel section.is-disabled{opacity:.45}#ls-panel section.is-disabled select,#ls-panel section.is-disabled input,#ls-panel section.is-disabled button{pointer-events:none}#ls-panel .hot{color:#e5ead8}`;
+    document.head.appendChild(style);
+  }
+
+  function installPanel(){
+    installStyles();
+    const panel = document.createElement('aside');
+    panel.id = 'ls-panel';
+    panel.innerHTML = `
+<header><div><h2>Live Steel Panel</h2><div class="sub">workshop · ${PANEL_VERSION}</div></div><button data-action="compact" title="collapse">◒</button></header>
+<div class="body">
+  <section>
+    <h3>Text</h3>
+    <textarea data-bind="text" spellcheck="false"></textarea>
+    <small>Separate morph phrases with <span class="hot">|</span> (up to 4). Manual line breaks stay \n inside a phrase.</small>
+    <div class="grid3">
+      <button class="primary" data-action="apply">Apply</button>
+      <button data-action="play">Play</button>
+      <button data-action="pause">Pause</button>
+    </div>
+    <div class="grid3">
+      <button data-action="reset">Reset</button>
+      <button data-action="lock">Lock now</button>
+      <button data-action="png">PNG</button>
+    </div>
+    <div class="grid3">
+      <button data-action="preset-live">Live</button>
+      <button data-action="preset-locked">Locked</button>
+      <button data-action="preset-poster">Poster</button>
+    </div>
+    <div class="grid2">
+      <label>Mode<select data-bind="mode" data-apply-on-change="true"><option value="locked">locked</option><option value="live">live</option><option value="morph">morph</option></select></label>
+      <label>Seed<span style="display:flex;gap:6px"><input data-bind="seed" data-apply-on-change="true" type="number" step="1" style="flex:1"><button data-action="seed-random" title="random seed" style="padding:7px 9px">🎲</button></span></label>
+    </div>
+    <div class="grid2">
+      <label class="inline"><span>Auto-lock</span><input data-bind="autoLock" data-apply-on-change="true" type="checkbox"></label>
+      <label>Lock ms<input data-bind="lockMs" data-apply-on-change="true" type="number" min="0" max="20000" step="100"></label>
+    </div>
+  </section>
+  <section>
+    <h3>Render</h3>
+    <div class="checks">
+      <label><input data-bind="render.glints" type="checkbox">glints</label>
+      <label><input data-bind="render.shadows" type="checkbox">shadows</label>
+      <label><input data-bind="render.dust" type="checkbox">dust</label>
+      <label><input data-bind="render.trails" type="checkbox">trails</label>
+      <label><input data-bind="render.causal" type="checkbox">causal</label>
+    </div>
+    <label class="inline"><span>Brightness</span><output></output><input data-bind="render.brightness" type="range" min="0.35" max="2.0" step="0.01"></label>
+    <label class="inline"><span>Contrast</span><output></output><input data-bind="render.contrast" type="range" min="0.35" max="2.0" step="0.01"></label>
+    <label class="inline"><span>Background fade</span><output></output><input data-bind="render.backgroundFade" type="range" min="0.04" max="0.94" step="0.01"></label>
+    <label>Debug overlay<select data-bind="render.debug"><option value="0">off</option><option value="1">alpha</option><option value="2">sdf</option><option value="3">tangent</option><option value="4">activation</option><option value="5">target density</option><option value="6">current density</option><option value="7">density void</option><option value="8">chain</option><option value="9">density pressure</option></select></label>
+  </section>
+  <section>
+    <h3>Text style</h3>
+    <div class="grid2">
+      <label class="inline"><span>Uppercase</span><input data-bind="textStyle.uppercase" data-apply-on-change="true" type="checkbox"></label>
+      <label>Breaks<select data-bind="textStyle.lineBreak" data-apply-on-change="true"><option value="auto">auto</option><option value="single">single</option><option value="manual">manual</option></select></label>
+    </div>
+    <label class="inline"><span>Scale</span><output></output><input data-bind="textStyle.scale" data-apply-on-change="true" type="range" min="0.25" max="2.2" step="0.01"></label>
+    <label class="inline"><span>Tracking</span><output></output><input data-bind="textStyle.tracking" data-apply-on-change="true" type="range" min="-1.5" max="4" step="0.01"></label>
+    <label class="inline"><span>Word gap</span><output></output><input data-bind="textStyle.wordGap" data-apply-on-change="true" type="range" min="0" max="4" step="0.01"></label>
+    <label class="inline"><span>Line gap</span><output></output><input data-bind="textStyle.lineGap" data-apply-on-change="true" type="range" min="0.3" max="2.6" step="0.01"></label>
+    <div class="grid2">
+      <label class="inline"><span>X</span><output></output><input data-bind="textStyle.x" data-apply-on-change="true" type="range" min="-90" max="90" step="1"></label>
+      <label class="inline"><span>Y</span><output></output><input data-bind="textStyle.y" data-apply-on-change="true" type="range" min="-45" max="45" step="1"></label>
+    </div>
+  </section>
+  <section id="ls-letter-section">
+    <h3>Per-letter</h3>
+    <small data-role="letter-note">Pick from the list or click a glyph on canvas. Overrides are applied during JS raster/layout, before WASM rebuilds the metal field.</small>
+    <label>Letter<select id="ls-letter-select"></select></label>
+    <label class="inline"><span>Scale</span><output data-out="scale"></output><input data-letter="scale" type="range" min="0.15" max="3" step="0.01"></label>
+    <div class="grid2">
+      <label class="inline"><span>X</span><output data-out="x"></output><input data-letter="x" type="range" min="-60" max="60" step="1"></label>
+      <label class="inline"><span>Y</span><output data-out="y"></output><input data-letter="y" type="range" min="-45" max="45" step="1"></label>
+    </div>
+    <label class="inline"><span>Rotation</span><output data-out="rotation"></output><input data-letter="rotation" type="range" min="-180" max="180" step="1"></label>
+    <label class="inline"><span>Spacing push</span><output data-out="spacing"></output><input data-letter="spacing" type="range" min="-18" max="24" step="1"></label>
+    <label class="inline"><span>Density</span><output data-out="density"></output><input data-letter="density" type="range" min="0" max="2.5" step="0.01"></label>
+    <div class="grid2"><label class="inline"><span>Hidden</span><input data-letter="hidden" type="checkbox"></label><button data-action="letter-reset">Reset letter</button></div>
+  </section>
+  <section>
+    <h3>Preset JSON</h3>
+    <div class="grid2">
+      <button data-action="preset-export">Save</button>
+      <label class="file-lite" for="ls-load-preset">Load</label>
+    </div>
+    <div class="grid2">
+      <button data-action="preset-copy">Copy JSON</button>
+      <button data-action="preset-link">Copy link</button>
+    </div>
+    <input id="ls-load-preset" class="hidden-file" type="file" accept="application/json,.json">
+    <div class="status" id="ls-status"></div>
+  </section>
+</div>`;
+    document.body.appendChild(panel);
+    statusEl = panel.querySelector('#ls-status');
+    bindPanel(panel);
+    syncInputs();
+  }
+
+  function panelSnapshot(){
+    return {
+      version: PANEL_VERSION,
+      ready: isReady(),
+      phrases: currentPhrases(),
+      selectedLetter: state.selectedLetter | 0,
+      state: deepClone(state),
+      status: statusEl ? statusEl.textContent : ''
+    };
+  }
+
+  function installPanelApi(){
+    window.__liveSteelPanel = {
+      version: PANEL_VERSION,
+      snapshot: panelSnapshot,
+      setText(value){
+        state.text = String(value || '');
+        ensureLetters();
+        syncInputs();
+        applyText(true);
+        return panelSnapshot();
+      },
+      setMode(value){
+        state.mode = String(value || 'locked');
+        syncInputs();
+        applyText(true);
+        return panelSnapshot();
+      },
+      setLetter(index, patch){
+        setSelectedLetter(Number(index) || 0);
+        Object.assign(currentLetter(), patch || {});
+        updateLetterInputs();
+        applyText(true);
+        return panelSnapshot();
+      },
+      applyPreset(preset){
+        state = mergeDeep(DEFAULT_STATE, preset || {});
+        ensureLetters();
+        syncInputs();
+        applyText(true);
+        return panelSnapshot();
+      },
+      exportDataUrl(){
+        return cv.toDataURL('image/png');
+      }
+    };
+  }
+
+  function bootWhenReady(){
+    ensureLetters();
+    try { PHRASES.length = 0; PHRASES.push(preparedText()); } catch (_) {}
+    installPanel();
+    installPanelApi();
+    setRenderOptions();
+    const timer = setInterval(() => {
+      if (!isReady()) {
+        setStatus('WASM booting…');
+        return;
+      }
+      clearInterval(timer);
+      if (!started) {
+        started = true;
+        applyText(true);
+      }
+    }, 90);
+  }
+
+  bootWhenReady();
+})();
+</script>
+<script>
+(function liveSteelPanelLoader(){
+  'use strict';
+  const DEFAULT_HTML = 'mf_proto_live_steel.html';
+  const boot = document.getElementById('boot');
+  const status = document.getElementById('status');
+  const pick = document.getElementById('pick');
+  const auto = document.getElementById('auto');
+  const panelInjection = document.getElementById('live-steel-panel-injection').textContent.trim();
+
+  function setStatus(message, bad = false){
+    status.textContent = message;
+    status.classList.toggle('bad', !!bad);
+  }
+
+  function validStandalone(html){
+    if (!html || !/<canvas\s+id=["']c["']/i.test(html)) return 'not the Live Steel standalone';
+    if (html.includes('__WASM_B64__')) return 'template.html still has __WASM_B64__; run python3 build.py or pick mf_proto_live_steel.html';
+    if (!/id=["']wasmb64["']/i.test(html)) return 'WASM payload script was not found';
+    return '';
+  }
+
+  function injectPanel(html){
+    const safeInjection = panelInjection.replace(/<\/script/gi, '<\\/script');
+    let bootHash = '';
+    try {
+      if (location.hash && location.hash.startsWith('#preset=')) bootHash = decodeURIComponent(location.hash.slice(8));
+    } catch (_) {}
+    const bridge = '\n<script>window.__LS_BOOT_PRESET=' + JSON.stringify(bootHash) + ';<\/script>';
+    const script = bridge + '\n<script>\n' + safeInjection + '\n<\/script>\n';
+    if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, script + '</body>');
+    return html + script;
+  }
+
+  function bootHtml(html, label){
+    const problem = validStandalone(html);
+    if (problem) {
+      setStatus('Cannot boot: ' + problem + '.', true);
+      return;
+    }
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('title', 'Live Steel Panel runtime');
+    iframe.srcdoc = injectPanel(html);
+    document.body.appendChild(iframe);
+    boot.remove();
+    document.title = 'Live Steel Panel · ' + label;
+  }
+
+  async function loadSameFolder(){
+    setStatus('Loading ' + DEFAULT_HTML + '…');
+    try {
+      const response = await fetch(DEFAULT_HTML, { cache: 'no-store' });
+      if (!response.ok) throw new Error(response.status + ' ' + response.statusText);
+      bootHtml(await response.text(), DEFAULT_HTML);
+    } catch (error) {
+      setStatus('Auto-load failed. Pick mf_proto_live_steel.html manually, or serve this directory with a tiny local server. Browser said: ' + error.message, true);
+    }
+  }
+
+  auto.addEventListener('click', loadSameFolder);
+
+  pick.addEventListener('change', async () => {
+    if (!pick.files || !pick.files[0]) return;
+    const file = pick.files[0];
+    setStatus('Reading ' + file.name + '…');
+    try { bootHtml(await file.text(), file.name); }
+    catch (error) { setStatus('Could not read file: ' + error.message, true); }
+  });
+
+  if (/^https?:/.test(location.protocol)) {
+    loadSameFolder();
+  } else {
+    setStatus('Opened from file:// — browsers block same-folder fetch here. Pick mf_proto_live_steel.html manually or serve the folder over http.');
+  }
+})();
+</script>
