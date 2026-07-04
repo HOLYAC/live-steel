@@ -38,8 +38,8 @@
 - **Host-invariant (identity):** source → WASM. MEASURED: Linux-сборка pinned
   1.95.0 отличалась от виндовой ровно на 1 байт из 125 283 (позиция 107982,
   `\` vs `/`); после remap-фикса расхождений быть не должно.
-  Windows-подтверждение — PENDING (прогнать `cargo build` на боксе, сверить
-  `embedded_wasm_sha256`).
+  Windows-подтверждение — MEASURED 2026-07-04: `cargo build` на боксе дал sha,
+  равный `embedded_wasm_sha256` (коммит 7e0ad84).
 - **Cross-host (пороговые гейты):** все 6 proof-гейтов зелёные и на Windows
   Chrome 149, и на Linux Chromium 149 (MEASURED оба). Perf p95: 5.26ms (win) /
   5.42ms (linux) при пороге 10.
@@ -68,7 +68,5 @@
   `tools/audit_causal_letters.cjs` в versioned config (закрыть D9 для аудита,
   как уже сделано для proof-гейтов) и деривировать пороги как
   min(два хоста) − объявленная маржа.
-- **Windows-сторона remap-фикса не измерена** (нет виндовой машины в этом
-  прогоне). Один `cargo build` на боксе закрывает.
 - **LICENSE кода не объявлена.** Шрифт — OFL 1.1; код по умолчанию
   all rights reserved, для публичного репо это должно быть сознательным выбором.
