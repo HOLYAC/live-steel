@@ -59,6 +59,8 @@ jobs:
         run: node capture_live_steel_proof.js --html=mf_proto_live_steel.html --out=review_pack --manifest=review_manifest.json --release-browser
       - name: Verify captured pack
         run: python3 verify_artifact.py --root review_pack --manifest review_manifest.json --mode release
+      - name: Pixel tripwire against committed candidate
+        run: python3 tools/verify_capture_candidate.py --candidate-stats proof_stats.json --capture-root review_pack
       - uses: actions/upload-artifact@v4
         with:
           name: live-steel-review-pack
