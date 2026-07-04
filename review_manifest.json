@@ -1,7 +1,7 @@
 {
   "schema": "live-steel-review-manifest-v2",
   "release_eligible": true,
-  "created_at_utc": "2026-07-01T09:37:20.174381+00:00",
+  "created_at_utc": "2026-07-04T16:20:09.303429+00:00",
   "paths": {
     "src_lib": "src/lib.rs",
     "cargo_toml": "Cargo.toml",
@@ -29,17 +29,17 @@
     "template_sha256": "55ecfacc98291711d7dde8c7c54d3f24525eb02211bdc078e22e2d9f7591478f",
     "font_license_sha256": "0515b06b7c690baaf837114c84252127d18933286b41909f9dd48c14d105bc3e",
     "embedded_font_sha256": "7523c0cc7f5c088ab663be51e111b9429a4f15681802a7e027eb658f497a26a8",
-    "build_py_sha256": "1bb8e7663de4db668bc2b78732516c6ceea5bcd226ca9184a0313689c53a4d88",
-    "capture_script_sha256": "ac5ba07b8fdd19214f7dbef3d4f38868e7cfc9afc402a5320012b726aad4604f",
+    "build_py_sha256": "cf67bb7f23f46b9e71c02abc54ee4d1e220502448b4afd0c5ee5ab7eaf6a805d",
+    "capture_script_sha256": "1454d69dff0f0bb2b5d173e56a7d1003db3026f351974339db7328fe52c35d7f",
     "verify_script_sha256": "09bd03787ac6d19a4eecf011abe4c3ebb3227e7e321c9d21cfe18d5532c6f6e2",
     "artifact_verify_script_sha256": "c454ef4c3acc2f84f6f797fc403f856d05f38c0788d0ff47c0e734963d9ad175",
     "manifest_schema_sha256": "1b02d8bb806da31d916e89e96486461e149691f87ed907e169c9921b016af0d7",
     "package_json_sha256": "63f819d68793bdbfe0c71a7f95ab0755055837d5eb9f37c4c58057df92745e92",
     "package_lock_sha256": "bac900e9e414b5b3bd0132547f3378530c6c7fee481912431e2d2b4a30e837e1",
     "gate_config_sha256": "5f328151e1e3841ded5f48f4bd68f5f126ee5cc428c6cc92e48e10c59f876094",
-    "embedded_wasm_sha256": "39d3ee4cb83b571f94e32bf8b99c9db7916adbb70c0ff4bafc207234c90b0d73",
-    "standalone_html_sha256": "9d3f6cf2907b69c3f9f7f6617c80b8056859e24c161d5edf6a6bae4662121a49",
-    "proof_stats_sha256": "2b44e44371d4813dd441019131435fda4d5a697ecb7a6a82b80c412e593c4ed6"
+    "embedded_wasm_sha256": "2e564bb1a9acbed9079fc3c11e90c5a13b37219756110852b4aa48df42255d0f",
+    "standalone_html_sha256": "0845eb392a422dba0b76de0b41e23efe3887f553d615a04764ef511beb93940c",
+    "proof_stats_sha256": "6a47e278aad20d3dd60b344d9af179b44e7b79d28a77cca345d942ffce19d55c"
   },
   "font": {
     "path": "assets/LiveSteelProof.woff2",
@@ -52,7 +52,7 @@
     "rustc_version": "rustc 1.95.0 (59807616e 2026-04-14)",
     "cargo_version": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
     "target": "wasm32-unknown-unknown",
-    "node_version": "v25.8.0",
+    "node_version": "v22.22.2",
     "playwright_version": "1.61.0",
     "browser_source": "playwright-managed",
     "browser_version": "149.0.7827.55"
@@ -65,74 +65,70 @@
       "--target",
       "wasm32-unknown-unknown",
       "--manifest-path",
-      "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\Cargo.toml"
+      "/home/claude/live-steel/Cargo.toml"
     ],
     "build_command": [
-      "C:\\Python314\\python.exe",
-      "build.py",
-      "--out",
-      "mf_proto_live_steel.html",
-      "--manifest",
-      "review_manifest.json"
+      "/usr/bin/python3",
+      "build.py"
     ]
   },
   "origin": {
-    "os": "Windows-11-10.0.26200-SP0",
-    "cpu": "AMD64 Family 25 Model 68 Stepping 1, AuthenticAMD",
+    "os": "Linux-6.18.5-x86_64-with-glibc2.39",
+    "cpu": "x86_64",
     "paths": {
-      "src_lib": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\src\\lib.rs",
-      "cargo_toml": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\Cargo.toml",
-      "cargo_lock": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\Cargo.lock",
-      "rust_toolchain": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\rust-toolchain.toml",
-      "template": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\template.html",
-      "font": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\assets\\LiveSteelProof.woff2",
-      "font_license": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\FONT_LICENSE.md",
-      "standalone_html": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\mf_proto_live_steel.html",
-      "proof_stats": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\proof_stats.json",
-      "gate_config": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\gate_config.json",
-      "package_json": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\package.json",
-      "package_lock": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\package-lock.json",
-      "build_script": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\build.py",
-      "capture_script": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\capture_live_steel_proof.js",
-      "verify_script": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\verify_live_steel.py",
-      "artifact_verify_script": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\verify_artifact.py",
-      "manifest_schema": "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\review_manifest.schema.json"
+      "src_lib": "/home/claude/live-steel/src/lib.rs",
+      "cargo_toml": "/home/claude/live-steel/Cargo.toml",
+      "cargo_lock": "/home/claude/live-steel/Cargo.lock",
+      "rust_toolchain": "/home/claude/live-steel/rust-toolchain.toml",
+      "template": "/home/claude/live-steel/template.html",
+      "font": "/home/claude/live-steel/assets/LiveSteelProof.woff2",
+      "font_license": "/home/claude/live-steel/FONT_LICENSE.md",
+      "standalone_html": "/home/claude/live-steel/mf_proto_live_steel.html",
+      "proof_stats": "/home/claude/live-steel/proof_stats.json",
+      "gate_config": "/home/claude/live-steel/gate_config.json",
+      "package_json": "/home/claude/live-steel/package.json",
+      "package_lock": "/home/claude/live-steel/package-lock.json",
+      "build_script": "/home/claude/live-steel/build.py",
+      "capture_script": "/home/claude/live-steel/capture_live_steel_proof.js",
+      "verify_script": "/home/claude/live-steel/verify_live_steel.py",
+      "artifact_verify_script": "/home/claude/live-steel/verify_artifact.py",
+      "manifest_schema": "/home/claude/live-steel/review_manifest.schema.json"
     }
   },
   "alpha_hashes": [
     {
       "phrase": "unusual mcp",
-      "sha256": "59c5aa977f1ca1b3fd9f7e9fbf7fc72eb8b933623c5b8efea5c265ef263a6894",
+      "sha256": "86ab74b882d45f432973345fb2b6163954bc03f8e5bad65d5e20def7e9652644",
       "cells": 28224
     },
     {
       "phrase": "feed me",
-      "sha256": "59b4663b06eb3f5dd06f0c6f193fbf050bd6cbfbe52c7ef7805be5e743070348",
+      "sha256": "40223667e7d2ab12f69ff120e1bf7f6dd408ed9dafa41a6dc8b70db060b8362a",
       "cells": 28224
     },
     {
       "phrase": "i will remember",
-      "sha256": "6cefc30da7abb5a00b2976deba89d62e6e5d48372b3d1d2f8a46c7bcd338005a",
+      "sha256": "82ad8d663561c5cd4100f89e7fd39a008a7570c442c14bfb6bea7239501c0c43",
       "cells": 28224
     },
     {
       "phrase": "describe self",
-      "sha256": "a278d4b036e161512739f7a1e02e320b12d94bfe3af2fe47ad2c5882dd31504f",
+      "sha256": "6678a1c1580d62d29d68707d0e2d020aa3db2cfb530db1f279a590bcf7da5a6d",
       "cells": 28224
     }
   ],
   "capture": {
     "command": [
-      "C:\\Program Files\\nodejs\\node.exe",
-      "Z:\\DDouns\\.scratch\\mf_live_steel_wasm\\capture_live_steel_proof.js",
+      "/usr/bin/node",
+      "/home/claude/live-steel/capture_live_steel_proof.js",
       "--html=mf_proto_live_steel.html",
-      "--out=mf_live_steel_review_pack",
+      "--out=/tmp/canon_pack",
       "--manifest=review_manifest.json",
       "--release-browser"
     ],
     "release_browser": true,
     "release_eligible": true,
-    "os": "Windows_NT 10.0.26200 x64",
-    "cpu": "AMD Ryzen 7 6800H with Radeon Graphics         "
+    "os": "Linux 6.18.5 x64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.30GHz"
   }
 }

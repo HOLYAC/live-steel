@@ -1,0 +1,65 @@
+name: gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  release-chain:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Rust (pinned by rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Unit tests
+        run: cargo test --release
+      - name: Clippy (deny warnings)
+        run: cargo clippy --release --target wasm32-unknown-unknown -- -D warnings
+      - name: Source -> WASM reproducibility against committed manifest
+        run: |
+          cargo build --release --target wasm32-unknown-unknown
+          python3 - <<'PY'
+          import json, hashlib, sys
+          m = json.load(open("review_manifest.json"))
+          built = hashlib.sha256(open(
+              "target/wasm32-unknown-unknown/release/mf_live_steel_wasm.wasm", "rb"
+          ).read()).hexdigest()
+          want = m["hashes"]["embedded_wasm_sha256"]
+          print("built   :", built)
+          print("manifest:", want)
+          sys.exit(0 if built == want else 1)
+          PY
+      - name: JS gates
+        run: |
+          npm ci --no-audit --no-fund
+          npm run check:js
+          npm run lint:js
+      - name: Full release verification (evidence bundle)
+        run: python3 verify_artifact.py --root . --manifest review_manifest.json --mode release
+
+  capture:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Rust (pinned by rust-toolchain.toml)
+        run: rustup toolchain install
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Build artifact
+        run: python3 build.py
+      - name: Proof capture (pinned Playwright Chromium)
+        run: node capture_live_steel_proof.js --html=mf_proto_live_steel.html --out=review_pack --manifest=review_manifest.json --release-browser
+      - name: Verify captured pack
+        run: python3 verify_artifact.py --root review_pack --manifest review_manifest.json --mode release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-steel-review-pack
+          path: review_pack

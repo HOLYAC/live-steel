@@ -86,8 +86,10 @@ function readJson(file) {
 
 function savePng(outDir, name, dataUrl) {
   const buffer = imageBuffer(dataUrl);
-  fs.writeFileSync(path.join(outDir, name), buffer);
-  return { file: name, sha256: sha256(buffer), bytes: buffer.length };
+  const evidenceDir = path.join(outDir, "proof");
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  fs.writeFileSync(path.join(evidenceDir, name), buffer);
+  return { file: `proof/${name}`, sha256: sha256(buffer), bytes: buffer.length };
 }
 
 function hashFloat32(values) {

@@ -1,0 +1,5 @@
+# Canon identity: panic-location paths must be separator-stable across hosts.
+# On Linux "src\" never matches (no-op); on Windows it folds src\lib.rs -> src/lib.rs
+# so source->WASM builds converge to the Linux-canonical byte identity.
+[target.wasm32-unknown-unknown]
+rustflags = ["--remap-path-prefix=src\\=src/"]
