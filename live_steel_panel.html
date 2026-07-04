@@ -90,7 +90,7 @@
 (function liveSteelPanel(){
   'use strict';
 
-  const PANEL_VERSION = 'live-steel-panel-v2';
+  const PANEL_VERSION = 'live-steel-panel-v4';
   const STORE_KEY = 'live-steel-panel-state-v1';
   const DEFAULT_STATE = {
     text: 'ZALUPA',
@@ -268,12 +268,16 @@
     const style = state.textStyle;
     const targetWidth = FIELD_W * (lines.length > 1 ? 0.54 : 0.86);
     let fs = Math.min(FIELD_H * (lines.length > 1 ? 0.30 : 0.32), targetWidth / (maxLineLen * 0.48));
-    fs *= clamp(style.scale, 0.25, 2.2);
     const weight = clamp(style.weight, 100, 1000) | 0;
     const setFont = () => { g.font = weight + ' ' + fs + 'px "LiveSteelProof","Arial Black","Segoe UI",Arial,sans-serif'; };
-    setFont();
-    let tracking = fs * 0.055 * clamp(style.tracking, -1.5, 4);
-    let wordGap = fs * 0.10 * clamp(style.wordGap, 0, 4);
+    let tracking = 0;
+    let wordGap = 0;
+    const applyMetrics = () => {
+      setFont();
+      tracking = fs * 0.055 * clamp(style.tracking, -1.5, 4);
+      wordGap = fs * 0.10 * clamp(style.wordGap, 0, 4);
+    };
+    applyMetrics();
 
     const measureChars = chars => {
       let width = 0;
@@ -283,9 +287,15 @@
     let measured = Math.max(...lines.map(line => measureChars(Array.from(line))));
     if (measured > targetWidth * 1.08) {
       fs *= (targetWidth * 1.08) / measured;
-      setFont();
-      tracking = fs * 0.055 * clamp(style.tracking, -1.5, 4);
-      wordGap = fs * 0.10 * clamp(style.wordGap, 0, 4);
+      applyMetrics();
+      measured = Math.max(...lines.map(line => measureChars(Array.from(line))));
+    }
+    // User scale applies AFTER autofit — otherwise the width clamp silently
+    // eats the knob on wide text and the slider lies to the metal.
+    const userScale = clamp(style.scale, 0.25, 2.2);
+    if (userScale !== 1) {
+      fs = Math.min(FIELD_H * 0.92, fs * userScale);
+      applyMetrics();
       measured = Math.max(...lines.map(line => measureChars(Array.from(line))));
     }
 
@@ -588,6 +598,8 @@
     if (!section) return;
     const multi = isMultiPhrase();
     section.classList.toggle('is-disabled', multi);
+    section.setAttribute('aria-disabled', multi ? 'true' : 'false');
+    for (const control of section.querySelectorAll('select,input,button')) control.disabled = multi;
     const note = section.querySelector('[data-role="letter-note"]');
     if (note) note.textContent = multi
       ? 'Per-letter is single-phrase only — remove | separators to edit letters.'
@@ -907,6 +919,10 @@
         return panelSnapshot();
       },
       setLetter(index, patch){
+        if (isMultiPhrase()) {
+          setStatus('Per-letter is single-phrase only — setLetter refused under | phrases.', 'bad');
+          return panelSnapshot();
+        }
         setSelectedLetter(Number(index) || 0);
         Object.assign(currentLetter(), patch || {});
         updateLetterInputs();

@@ -59,6 +59,34 @@ jobs:
         run: |
           python3 tools/build_live_steel_panel.py --source mf_proto_live_steel.html --out .tmp_live_steel_panel_built.html
           node tools/smoke_live_steel_panel.cjs --html=.tmp_live_steel_panel_built.html --out=.tmp_live_steel_panel_smoke.png
+      - name: Panel truth lab, including negative control
+        run: |
+          node tools/panel_truth_probe.cjs \
+            --html=.tmp_live_steel_panel_built.html \
+            --out=.tmp_live_steel_panel_truth.png \
+            --json=.tmp_live_steel_panel_truth.json \
+            --candidate=tools/panel_truth_candidate.json
+          node tools/panel_sabotage_per_letter.cjs \
+            --in=.tmp_live_steel_panel_built.html \
+            --out=.tmp_live_steel_panel_sabotaged.html
+          if node tools/panel_truth_probe.cjs \
+            --html=.tmp_live_steel_panel_sabotaged.html \
+            --json=.tmp_live_steel_panel_sabotaged_truth.json; then
+            echo "sabotaged panel passed the truth probe" >&2
+            exit 1
+          else
+            echo "negative control failed as expected"
+          fi
+      - name: Upload panel truth forensics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panel-truth-forensics
+          if-no-files-found: ignore
+          path: |
+            .tmp_live_steel_panel_truth.png
+            .tmp_live_steel_panel_truth.json
+            .tmp_live_steel_panel_sabotaged_truth.json
       - name: Build artifact
         run: python3 build.py
       - name: Proof capture (pinned Playwright Chromium)

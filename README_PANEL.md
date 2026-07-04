@@ -50,3 +50,18 @@ dead `#preset=` hash in the iframe path, silent seed reset to FIXED_SEED on wind
 and `morph` mode being a no-op with a single phrase. Smoke evidence in `panel_smoke/`.
 This integration adds a machine smoke gate over those claims instead of leaving
 them as screenshots only.
+
+## v4 — Truth Lab
+
+The panel must prove its knobs reach the metal, and the test must catch its own
+staged corpse. `tools/panel_truth_probe.cjs` reads phrase-0 field alpha straight
+from WASM memory and gates on differential hashes: every per-letter knob (scale,
+x, y, rotation, spacing, density, hidden) must change the field; render controls
+must NOT; re-applying a patch must reproduce the hash byte-exact; the morph walk
+is stepped deterministically. `tools/panel_sabotage_per_letter.cjs` builds a dead
+panel copy for the CI negative control — healthy pass + corpse fail, every run.
+`tools/panel_truth_candidate.json` pins the host-deterministic values for the
+capture job. Contract change in v4: per-letter is hard-disabled under multi-phrase
+(`aria-disabled`, real `disabled` controls, `setLetter` API refuses mutation), and
+`textStyle.scale` now applies after autofit so it works on wide text. Model and
+first-autopsy record: `docs/PANEL_TRUTH_LAB.md`.

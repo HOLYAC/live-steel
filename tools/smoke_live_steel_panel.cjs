@@ -150,7 +150,7 @@ async function main() {
     await page.goto(fileUrl(html));
     await waitForPanel(page);
     const initial = await panelSnapshot(page);
-    requireCondition(initial.version === "live-steel-panel-v2", `bad panel version: ${initial.version}`);
+    requireCondition(/^live-steel-panel-v\d+$/.test(initial.version), `bad panel version: ${initial.version}`);
 
     const single = await applySinglePhraseProbe(page);
     const singleStats = await assertCanvasAlive(page);

@@ -1,0 +1,27 @@
+{
+  "schema": "live-steel-panel-truth-candidate-v1",
+  "scope": "Scheduled/manual capture job on ubuntu-24.04 with the Playwright Chromium pinned by package-lock.json. Candidate pins host-deterministic field hashes only; live screenshots stay forensic.",
+  "probe": {
+    "singleText": "codex trace",
+    "aggregateLetterIndex": 1,
+    "aggregateLetterPatch": {
+      "rotation": -18,
+      "scale": 1.36,
+      "x": -10,
+      "y": 4,
+      "density": 1.32
+    },
+    "morphText": "iron memory|soft machine",
+    "morphSeed": 7331
+  },
+  "expected": {
+    "alphaNeutral": "93c63a8f:112896",
+    "alphaAggregate": "f47e94a2:112896",
+    "renderInvariantAlpha": "93c63a8f:112896",
+    "morphPhraseWalk": [0, 1, 0],
+    "steppedLitRatio": 0.028125
+  },
+  "tolerance": {
+    "steppedLitRatio": 1e-12
+  }
+}
