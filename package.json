@@ -1,0 +1,17 @@
+{
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "check:js": "node --check capture_live_steel_proof.js && node tools/check_template_js.cjs",
+    "lint:js": "eslint capture_live_steel_proof.js tools/*.cjs",
+    "audit:causal": "node tools/audit_causal_letters.cjs --html=mf_proto_live_steel.html --out=causal_audit.json",
+    "capture": "node capture_live_steel_proof.js --html=mf_proto_live_steel.html --out=mf_live_steel_review_pack --manifest=review_manifest.json --release-browser",
+    "verify": "python verify_artifact.py --root mf_live_steel_review_pack --manifest review_manifest.json --mode release",
+    "release": "python tools/release_live_steel.py --mode v17-clean --out live_steel_v17_clean.zip"
+  },
+  "devDependencies": {
+    "@fontsource/roboto": "5.2.10",
+    "eslint": "10.6.0",
+    "playwright": "1.61.0"
+  }
+}

@@ -1,0 +1,1579 @@
+<!doctype html><meta charset="utf-8"><title>mf proto - WASM live steel field</title>
+<style>
+__FONT_FACE__
+html,body{margin:0;height:100%;background:#050606;overflow:hidden}
+canvas{display:block}
+</style>
+<canvas id="c"></canvas>
+<script id="wasmb64" type="application/octet-stream">__WASM_B64__</script>
+<script>
+const PHRASES=['unusual mcp','feed me','i will remember','describe self'];
+const TARGET=3400, MAX_PHRASES=4, FIELD_W=224, FIELD_H=126, FIELD_MAX=FIELD_W*FIELD_H;
+const FIELD_META_STRIDE=8, PROOF_FRAMES=[8,48,150,330], FIXED_SEED=2246;
+const cv=document.getElementById('c'), x=cv.getContext('2d');
+const dbgCanvas=document.createElement('canvas'), dbgCtx=dbgCanvas.getContext('2d');
+dbgCanvas.width=FIELD_W; dbgCanvas.height=FIELD_H;
+const INK_OFFSETS=[[0,0],[-0.62,0],[0.62,0],[0,-0.52],[0,0.52],[-0.44,-0.36],[0.44,0.36]];
+let W=0,H=0,DPR=Math.min(devicePixelRatio||1,1.5), wasm=null, OUT_STRIDE=0, PERF_STRIDE=0, SLOT_STRIDE=0;
+let running=true, last=performance.now(), perf=0, DEBUG=false;
+const prevX=new Float32Array(TARGET), prevY=new Float32Array(TARGET);
+let prevReady=false, lastMotionTrailMetrics={count:0,avgDisplacement:0,p95Displacement:0};
+let lastCausalTraceMetrics={count:0,avgLength:0,p95Length:0};
+const BODY_SHADE_BINS=8, BODY_ALPHA_BINS=5, BODY_WIDTH_BINS=6;
+const BODY_BUCKETS=BODY_SHADE_BINS*BODY_ALPHA_BINS*BODY_WIDTH_BINS;
+const bodyPaths=new Array(BODY_BUCKETS), bodyCounts=new Uint16Array(BODY_BUCKETS);
+const bodyAlpha=[0.110,0.52,0.72,0.86,0.96];
+const bodyWidth=[0.80,1.10,1.43,1.82,2.28,2.82];
+const MASS_ALPHA_BINS=4, MASS_WIDTH_BINS=5, MASS_BUCKETS=MASS_ALPHA_BINS*MASS_WIDTH_BINS;
+const massPaths=new Array(MASS_BUCKETS), massCounts=new Uint16Array(MASS_BUCKETS);
+const massAlpha=[0.052,0.082,0.116,0.158], massWidth=[1.05,1.38,1.76,2.18,2.68];
+const SHADOW_ALPHA_BINS=4, SHADOW_WIDTH_BINS=4, SHADOW_BUCKETS=SHADOW_ALPHA_BINS*SHADOW_WIDTH_BINS;
+const shadowPaths=new Array(SHADOW_BUCKETS), shadowCounts=new Uint16Array(SHADOW_BUCKETS);
+const shadowAlpha=[0.15,0.24,0.33,0.43], shadowWidth=[0.75,1.05,1.45,1.95];
+
+function smoothUp(lo,hi,v){
+  const t=Math.max(0,Math.min(1,(v-lo)/Math.max(0.0001,hi-lo)));
+  return t*t*(3-2*t);
+}
+function hashUnit(n){
+  let h=(n|0)>>>0;
+  h^=h>>>16; h=Math.imul(h,0x7feb352d);
+  h^=h>>>15; h=Math.imul(h,0x846ca68b);
+  h^=h>>>16;
+  return (h>>>0)/4294967295;
+}
+function alphaBin(alpha){
+  return alpha<0.08?0:alpha<0.28?1:alpha<0.45?2:alpha<0.62?3:4;
+}
+function views(){
+  const b=wasm.memory.buffer;
+  return{
+    alpha:new Float32Array(b,wasm.field_alpha_ptr(),MAX_PHRASES*FIELD_MAX),
+    meta:new Float32Array(b,wasm.field_meta_ptr(),MAX_PHRASES*FIELD_META_STRIDE),
+    sdf:new Float32Array(b,wasm.field_sdf_ptr(),MAX_PHRASES*FIELD_MAX),
+    potential:new Float32Array(b,wasm.field_potential_ptr(),MAX_PHRASES*FIELD_MAX),
+    fieldNx:new Float32Array(b,wasm.field_nx_ptr(),MAX_PHRASES*FIELD_MAX),
+    fieldNy:new Float32Array(b,wasm.field_ny_ptr(),MAX_PHRASES*FIELD_MAX),
+    fieldTx:new Float32Array(b,wasm.field_tx_ptr(),MAX_PHRASES*FIELD_MAX),
+    fieldTy:new Float32Array(b,wasm.field_ty_ptr(),MAX_PHRASES*FIELD_MAX),
+    targetRho:new Float32Array(b,wasm.field_target_rho_ptr(),MAX_PHRASES*FIELD_MAX),
+    spine:new Float32Array(b,wasm.field_spine_ptr(),MAX_PHRASES*FIELD_MAX),
+    anisotropy:new Float32Array(b,wasm.field_anisotropy_ptr(),MAX_PHRASES*FIELD_MAX),
+    activation:new Float32Array(b,wasm.activation_ptr(),MAX_PHRASES*FIELD_MAX),
+    out:new Float32Array(b,wasm.out_ptr(),TARGET*OUT_STRIDE),
+    perf:new Float32Array(b,wasm.perf_ptr(),PERF_STRIDE),
+    slotFx:new Float32Array(b,wasm.slot_fx_ptr(),MAX_PHRASES*SLOT_STRIDE),
+    slotFy:new Float32Array(b,wasm.slot_fy_ptr(),MAX_PHRASES*SLOT_STRIDE),
+    slotTx:new Float32Array(b,wasm.slot_tx_ptr(),MAX_PHRASES*SLOT_STRIDE),
+    slotTy:new Float32Array(b,wasm.slot_ty_ptr(),MAX_PHRASES*SLOT_STRIDE),
+    slotPriority:new Float32Array(b,wasm.slot_priority_ptr(),MAX_PHRASES*SLOT_STRIDE),
+    heapX:new Float32Array(b,wasm.heap_x_ptr(),TARGET),
+    heapY:new Float32Array(b,wasm.heap_y_ptr(),TARGET),
+    captureS:new Float32Array(b,wasm.capture_s_ptr(),TARGET),
+    traceLen:new Float32Array(b,wasm.trace_len_ptr(),TARGET),
+    rotationTrace:new Float32Array(b,wasm.rotation_trace_ptr(),TARGET),
+    particleState:new Float32Array(b,wasm.particle_state_ptr(),TARGET)
+  };
+}
+function resizeCanvas(){
+  const iw=innerWidth||1280, ih=innerHeight||800;
+  W=cv.width=Math.round(iw*DPR); H=cv.height=Math.round(ih*DPR);
+  cv.style.width=iw+'px'; cv.style.height=ih+'px';
+}
+function planTextRaster(text,g){
+  const glyphText=text;
+  const words=glyphText.split(/\s+/).filter(Boolean);
+  let lines=[glyphText];
+  if(glyphText.length>14&&words.length>1){
+    let best=1, bestScore=1e9;
+    for(let k=1;k<words.length;k++){
+      const a=words.slice(0,k).join(' '), b=words.slice(k).join(' ');
+      const score=Math.abs(a.length-b.length)+Math.max(a.length,b.length)*0.08;
+      if(score<bestScore){best=k;bestScore=score;}
+    }
+    lines=[words.slice(0,best).join(' '),words.slice(best).join(' ')];
+  }
+  const maxLineLen=Math.max(...lines.map(line=>line.length));
+  const targetWidth=FIELD_W*(lines.length>1?0.54:0.86);
+  let fs=Math.min(FIELD_H*(lines.length>1?0.30:0.32), targetWidth/(maxLineLen*0.48));
+  g.font='900 '+fs+'px "LiveSteelProof","Arial Black","Segoe UI",Arial,sans-serif';
+  let tracking=fs*0.055;
+  let wordGap=fs*0.10;
+  const measureLine=line=>{
+    let width=0;
+    for(const ch of line)width+=g.measureText(ch).width+(ch===' '?wordGap:0);
+    return width+Math.max(0,line.length-1)*tracking;
+  };
+  let measured=Math.max(...lines.map(line=>measureLine(line)));
+  if(measured>targetWidth){
+    fs*=targetWidth/measured;
+    g.font='900 '+fs+'px "LiveSteelProof","Arial Black","Segoe UI",Arial,sans-serif';
+    tracking=fs*0.055;
+    wordGap=fs*0.10;
+    measured=Math.max(...lines.map(line=>measureLine(line)));
+  }
+  const charEdges=line=>{
+    const edges=[0];
+    let x=0;
+    for(let i=0;i<line.length;i++){
+      x+=g.measureText(line[i]).width+(line[i]===' '?wordGap:0);
+      if(i<line.length-1)x+=tracking;
+      edges.push(x);
+    }
+    return edges;
+  };
+  const lineGap=fs*0.92;
+  const linePlans=lines.map((line,i)=>{
+    const width=measureLine(line);
+    const y=FIELD_H/2+(i-(lines.length-1)/2)*lineGap;
+    return{line,y,width,x0:FIELD_W/2-width/2,x1:FIELD_W/2+width/2,edges:charEdges(line)};
+  });
+  return{lines,linePlans,fs,lineGap,targetWidth,tracking,wordGap};
+}
+function rasterAlpha(text){
+  const glyphText=text;
+  const o=document.createElement('canvas'); o.width=FIELD_W; o.height=FIELD_H;
+  const g=o.getContext('2d',{willReadFrequently:true});
+  const plan=planTextRaster(glyphText,g);
+  g.fillStyle='#000'; g.fillRect(0,0,FIELD_W,FIELD_H);
+  g.fillStyle='#fff'; g.textAlign='left'; g.textBaseline='middle';
+  for(const line of plan.linePlans){
+    for(let ci=0;ci<line.line.length;ci++){
+      const ch=line.line[ci];
+      const x0=line.x0+line.edges[ci];
+      for(const [ox,oy] of INK_OFFSETS)g.fillText(ch,x0+ox,line.y+oy);
+    }
+  }
+  const im=g.getImageData(0,0,FIELD_W,FIELD_H).data;
+  const a=new Float32Array(FIELD_MAX);
+  let minX=FIELD_W,maxX=0,minY=FIELD_H,maxY=0,mass=0;
+  for(let yy=0;yy<FIELD_H;yy++)for(let xx=0;xx<FIELD_W;xx++){
+    const v=im[(yy*FIELD_W+xx)*4]/255;
+    const aa=v<0.02?0:Math.min(1,Math.pow(v,0.82));
+    a[yy*FIELD_W+xx]=aa;
+    if(aa>0.12){if(xx<minX)minX=xx;if(xx>maxX)maxX=xx;if(yy<minY)minY=yy;if(yy>maxY)maxY=yy;mass+=aa;}
+  }
+  if(mass<=0){minX=maxX=FIELD_W/2;minY=maxY=FIELD_H/2;}
+  return{alpha:a,bounds:{minX,maxX,minY,maxY,mass}};
+}
+function loadFields(){
+  for(let pi=0;pi<PHRASES.length;pi++){
+    const v=views();
+    const f=rasterAlpha(PHRASES[pi]), base=pi*FIELD_MAX, mb=pi*FIELD_META_STRIDE;
+    v.alpha.set(f.alpha,base);
+    v.meta[mb]=FIELD_W; v.meta[mb+1]=FIELD_H;
+    v.meta[mb+2]=f.bounds.minX*W/FIELD_W; v.meta[mb+3]=(f.bounds.maxX+1)*W/FIELD_W;
+    v.meta[mb+4]=f.bounds.minY*H/FIELD_H; v.meta[mb+5]=(f.bounds.maxY+1)*H/FIELD_H;
+    v.meta[mb+6]=f.bounds.mass; v.meta[mb+7]=1;
+    wasm.sim_rebuild_field(pi);
+  }
+}
+function rebuild(){
+  resizeCanvas();
+  if(!wasm)return;
+  wasm.sim_config(PHRASES.length,W,H);
+  loadFields();
+  wasm.sim_reset_seed(FIXED_SEED);
+}
+function phaseName(p){return p===0?'assemble':p===1?'dwell':'morph';}
+function fadeBackground(){
+  x.globalCompositeOperation='source-over';
+  x.fillStyle='rgba(5,6,6,0.62)';
+  x.fillRect(0,0,W,H);
+  const g=x.createRadialGradient(W*0.42,H*0.53,0,W*0.42,H*0.53,Math.max(W,H)*0.64);
+  g.addColorStop(0,'rgba(28,29,25,0.030)');
+  g.addColorStop(0.62,'rgba(8,9,8,0.026)');
+  g.addColorStop(1,'rgba(0,0,0,0.22)');
+  x.fillStyle=g; x.fillRect(0,0,W,H);
+}
+function drawContactShadows(out){
+  x.globalCompositeOperation='source-over';
+  x.lineCap='butt';
+  shadowCounts.fill(0);
+  for(let b=0;b<SHADOW_BUCKETS;b++)shadowPaths[b]=null;
+  for(let i=0;i<TARGET;i++){
+    const o=i*OUT_STRIDE, active=out[o+5], field=out[o+6], chain=out[o+7], pressure=out[o+8];
+    const anchored=Math.max(field,chain*0.72);
+    if(active<0.12&&anchored<0.14)continue;
+    if(anchored<0.10&&(i%4)!==0)continue;
+    if(active<0.55&&anchored<0.22&&(i%2)!==0)continue;
+    const px=out[o]+1.8*DPR, py=out[o+1]+2.4*DPR, a=out[o+2], len=out[o+3], rad=out[o+4];
+    const L=len*(0.96+field*0.10)*DPR, ca=Math.cos(a)*L, sa=Math.sin(a)*L;
+    const width=Math.max(0.7,rad*(1.9+pressure*0.35));
+    const alpha=(0.055+0.18*active+0.09*pressure)*(0.45+0.55*Math.min(1,anchored*1.4));
+    const wb=Math.max(0,Math.min(SHADOW_WIDTH_BINS-1,Math.floor((width-0.7)/0.45)));
+    const ab=alpha<0.20?0:alpha<0.29?1:alpha<0.38?2:3;
+    const key=ab*SHADOW_WIDTH_BINS+wb;
+    let path=shadowPaths[key];
+    if(!path)path=shadowPaths[key]=new Path2D();
+    path.moveTo(px-ca*.5,py-sa*.5); path.lineTo(px+ca*.5,py+sa*.5);
+    shadowCounts[key]++;
+  }
+  for(let key=0;key<SHADOW_BUCKETS;key++){
+    if(!shadowCounts[key])continue;
+    const wb=key%SHADOW_WIDTH_BINS, ab=Math.floor(key/SHADOW_WIDTH_BINS);
+    x.lineWidth=shadowWidth[wb]*DPR;
+    x.strokeStyle='rgba(0,0,0,'+shadowAlpha[ab].toFixed(3)+')';
+    x.stroke(shadowPaths[key]);
+  }
+}
+function drawBodies(out){
+  x.globalCompositeOperation='source-over';
+  x.lineCap='butt';
+  bodyCounts.fill(0);
+  for(let b=0;b<BODY_BUCKETS;b++)bodyPaths[b]=null;
+  massCounts.fill(0);
+  for(let b=0;b<MASS_BUCKETS;b++)massPaths[b]=null;
+  let scratchPath=null;
+  for(let i=0;i<TARGET;i++){
+    const o=i*OUT_STRIDE, px=out[o], py=out[o+1], a=out[o+2], len=out[o+3], rad=out[o+4];
+    const active=out[o+5], field=out[o+6], chain=out[o+7], pressure=out[o+8], depth=out[o+10], rough=out[o+11], structural=out[o+13]||0;
+    const material=materialOfOut(out,o);
+    if(material<0.075&&(i%4)!==0)continue;
+    const chip=0.88+0.10*Math.sin(rough*41.0+depth*13.0);
+    const L=len*chip*(0.90+0.12*field)*DPR, ca=Math.cos(a)*L, sa=Math.sin(a)*L;
+    if(material>0.18){
+      const mw=Math.max(0.95,rad*(1.38+1.02*material+0.34*chain+pressure*0.18+structural*0.30));
+      const ma=Math.min(0.22,0.048+0.078*active+0.054*chain+0.034*field+0.034*structural);
+      const mwb=Math.max(0,Math.min(MASS_WIDTH_BINS-1,Math.floor((mw-0.85)/0.42)));
+      const mab=ma<0.10?0:ma<0.145?1:ma<0.195?2:3;
+      const mkey=mab*MASS_WIDTH_BINS+mwb;
+      let mpath=massPaths[mkey];
+      if(!mpath)mpath=massPaths[mkey]=new Path2D();
+      mpath.moveTo(px-ca*.5,py-sa*.5); mpath.lineTo(px+ca*.5,py+sa*.5);
+      massCounts[mkey]++;
+    }
+    const body=Math.min(235,58+Math.floor(44*material+76*field+58*chain+28*structural+24*depth+12*(1-rough)));
+    const captureGlow=Math.max(active,field,chain);
+    const alpha=captureGlow<0.10
+      ?Math.min(0.17,0.034+0.168*material+0.018*depth+0.030*structural)
+      :Math.min(0.98,0.23+0.63*active+0.27*chain+0.21*field+0.15*structural);
+    const width=Math.max(0.54,rad*(0.86+0.90*material+field*0.36+pressure*0.18+structural*0.22));
+    const sb=Math.max(0,Math.min(BODY_SHADE_BINS-1,Math.floor((body-28)/12.5)));
+    const ab=alphaBin(alpha);
+    const wb=Math.max(0,Math.min(BODY_WIDTH_BINS-1,Math.floor((width-0.45)/0.28)));
+    const key=(sb*BODY_ALPHA_BINS+ab)*BODY_WIDTH_BINS+wb;
+    let path=bodyPaths[key];
+    if(!path)path=bodyPaths[key]=new Path2D();
+    path.moveTo(px-ca*.5,py-sa*.5); path.lineTo(px+ca*.5,py+sa*.5);
+    bodyCounts[key]++;
+    if(rough>0.72&&active>0.22){
+      const cut=0.45+0.25*rough, dx=Math.cos(a)*rad*cut*DPR, dy=Math.sin(a)*rad*cut*DPR;
+      if(!scratchPath)scratchPath=new Path2D();
+      scratchPath.moveTo(px+ca*.5-dx,py+sa*.5-dy); scratchPath.lineTo(px+ca*.5+dx,py+sa*.5+dy);
+    }
+  }
+  for(let key=0;key<MASS_BUCKETS;key++){
+    if(!massCounts[key])continue;
+    const wb=key%MASS_WIDTH_BINS, ab=Math.floor(key/MASS_WIDTH_BINS);
+    x.lineWidth=massWidth[wb]*DPR;
+    x.strokeStyle='rgba(31,35,36,'+massAlpha[ab].toFixed(3)+')';
+    x.stroke(massPaths[key]);
+  }
+  for(let key=0;key<BODY_BUCKETS;key++){
+    if(!bodyCounts[key])continue;
+    const wb=key%BODY_WIDTH_BINS, ab=Math.floor(key/BODY_WIDTH_BINS)%BODY_ALPHA_BINS;
+    const sb=Math.floor(key/(BODY_WIDTH_BINS*BODY_ALPHA_BINS));
+    const body=Math.min(222,62+sb*20);
+    x.lineWidth=bodyWidth[wb]*DPR;
+    x.strokeStyle='rgba('+body+','+Math.min(218,body+8)+','+Math.min(212,body+4)+','+bodyAlpha[ab].toFixed(3)+')';
+    x.stroke(bodyPaths[key]);
+  }
+  if(scratchPath){
+    x.strokeStyle='rgba(8,9,8,0.20)';
+    x.lineWidth=Math.max(0.40,0.48*DPR);
+    x.stroke(scratchPath);
+  }
+}
+function drawGlints(out){
+  x.globalCompositeOperation='lighter';
+  x.lineCap='butt';
+  const lightX=-0.42, lightY=-0.91, perpX=-lightY, perpY=lightX;
+  let count=0, activeCount=0;
+  for(let i=0;i<TARGET;i++){
+    const o=i*OUT_STRIDE, active=out[o+5], field=out[o+6];
+    if(active>0.18||field>0.22)activeCount++;
+    if(active<0.16&&field<0.18)continue;
+    const angle=out[o+2], chain=out[o+7], glintSeed=out[o+9], rough=out[o+11], speed=out[o+12];
+    const ax=Math.cos(angle), ay=Math.sin(angle);
+    const specAxis=Math.pow(Math.abs(ax*perpX+ay*perpY),11);
+    const specMotion=smoothUp(0.05,1.80,speed);
+    const specChain=0.35+0.65*chain;
+    const specRough=0.20+0.80*rough;
+    const hotFront=smoothUp(1.10,2.40,speed);
+    const spec=specAxis*specChain*specRough*(0.56+0.44*specMotion)*(1.45+2.55*glintSeed);
+    if(spec<0.42+0.155*hotFront)continue;
+    count++;
+    const px=out[o], py=out[o+1], len=out[o+3], rad=out[o+4];
+    const L=len*(0.12+0.22*Math.min(1,spec))*DPR, ca=ax*L, sa=ay*L;
+    x.lineWidth=Math.max(0.35,rad*(0.24+chain*0.14))*DPR;
+    x.strokeStyle='rgba(190,194,181,'+(0.09+Math.min(0.25,spec*0.20)).toFixed(3)+')';
+    x.beginPath(); x.moveTo(px-ca*.5,py-sa*.5); x.lineTo(px+ca*.5,py+sa*.5); x.stroke();
+  }
+  x.globalCompositeOperation='source-over';
+  return{glintCount:count,activeCount};
+}
+function drawLooseDust(out){
+  x.globalCompositeOperation='source-over';
+  x.lineCap='butt';
+  for(let i=0;i<TARGET;i++){
+    const o=i*OUT_STRIDE, active=out[o+5], field=out[o+6], chain=out[o+7];
+    const anchored=Math.max(field,chain*0.72);
+    if(anchored>0.065)continue;
+    if(active>0.40){if((i%5)!==0)continue;}
+    else if(active>0.09){if((i%9)!==0)continue;}
+    else if((i%7)!==0)continue;
+    const px=out[o], py=out[o+1], a=out[o+2], len=out[o+3]*0.62, rad=out[o+4], depth=out[o+10];
+    const L=len*DPR, ca=Math.cos(a)*L, sa=Math.sin(a)*L;
+    x.lineWidth=Math.max(0.35,rad*0.45)*DPR;
+    x.strokeStyle='rgba(48,54,50,'+(0.003+0.007*depth+0.010*Math.min(1,active)).toFixed(3)+')';
+    x.beginPath(); x.moveTo(px-ca*.5,py-sa*.5); x.lineTo(px+ca*.5,py+sa*.5); x.stroke();
+  }
+}
+function drawMotionTrails(out){
+  let count=0,sum=0;
+  const distances=[];
+  const perf=views().perf;
+  const assembleTrailBoost=(perf[1]|0)===0&&perf[0]>1.10;
+  const minDistance=assembleTrailBoost?0.48:1.2;
+  const minSpeed=assembleTrailBoost?0.16:0.42;
+  const minAlpha=assembleTrailBoost?0.004:0.006;
+  x.globalCompositeOperation='lighter';
+  x.lineCap='butt';
+  if(prevReady){
+    for(let i=0;i<TARGET;i++){
+      const o=i*OUT_STRIDE, field=out[o+6], chain=out[o+7], speed=out[o+12];
+      const material=materialOfOut(out,o);
+      const dx=out[o]-prevX[i], dy=out[o+1]-prevY[i];
+      const d=Math.hypot(dx,dy);
+      if(d<minDistance||speed<minSpeed||material<0.12)continue;
+      const lock=Math.max(field,chain);
+      const alpha=Math.min(0.13,(0.018+speed*0.020+d*0.010)*Math.max(0.10,1-lock*0.72));
+      if(alpha<minAlpha)continue;
+      const px=out[o], py=out[o+1], back=Math.min(18,d*1.65)*DPR;
+      const nx=dx/Math.max(0.001,d), ny=dy/Math.max(0.001,d);
+      const shade=118+Math.floor(Math.min(1,material)*72);
+      x.lineWidth=Math.max(0.35,out[o+4]*0.52)*DPR;
+      x.strokeStyle='rgba('+shade+','+Math.min(214,shade+8)+','+Math.min(208,shade+4)+','+alpha.toFixed(3)+')';
+      x.beginPath();
+      x.moveTo(px-nx*back,py-ny*back);
+      x.lineTo(px,py);
+      x.stroke();
+      count++;
+      sum+=d;
+      distances.push(d);
+    }
+  }
+  for(let i=0;i<TARGET;i++){
+    const o=i*OUT_STRIDE;
+    prevX[i]=out[o];
+    prevY[i]=out[o+1];
+  }
+  prevReady=true;
+  distances.sort((a,b)=>a-b);
+  lastMotionTrailMetrics={
+    count,
+    avgDisplacement:count?+(sum/count).toFixed(4):0,
+    p95Displacement:count?+distances[Math.min(count-1,Math.floor(count*0.95))].toFixed(4):0
+  };
+  x.globalCompositeOperation='source-over';
+}
+function drawCausalTraces(out){
+  const p=views().perf, phase=p[1]|0, phaseS=p[0]||0;
+  const fade=phase===0?(1-smoothUp(0.72,0.98,phaseS/4.0)):phase===2?(1-smoothUp(0.10,0.42,phaseS/3.3)):0;
+  let count=0,sum=0;
+  const distances=[];
+  if(fade<=0.004){
+    lastCausalTraceMetrics={count:0,avgLength:0,p95Length:0};
+    return;
+  }
+  const v=views();
+  x.globalCompositeOperation='lighter';
+  x.lineCap='butt';
+  for(let i=0;i<TARGET;i++){
+    if((i%5)!==0)continue;
+    const o=i*OUT_STRIDE, active=out[o+5], field=out[o+6], chain=out[o+7], speed=out[o+12];
+    const material=materialOfOut(out,o);
+    if(active<0.20||material<0.10)continue;
+    const hx=v.heapX[i], hy=v.heapY[i], px=out[o], py=out[o+1];
+    const dx=px-hx, dy=py-hy, d=Math.hypot(dx,dy);
+    if(d<52)continue;
+    const lock=Math.max(field,chain);
+    const motion=smoothUp(0.18,1.80,speed);
+    const alpha=Math.min(0.075,(0.010+0.020*motion+0.018*active)*fade*Math.max(0.15,1-lock*0.58));
+    if(alpha<0.004)continue;
+    const rough=out[o+11]||0;
+    const midx=(hx+px)*0.5+Math.sin(rough*31.7+i)*Math.min(72,d*0.10)*DPR;
+    const midy=(hy+py)*0.5+Math.cos(rough*23.3+i*0.37)*Math.min(48,d*0.075)*DPR;
+    const shade=92+Math.floor(Math.min(1,material)*74);
+    x.lineWidth=Math.max(0.28,out[o+4]*0.34)*DPR;
+    x.strokeStyle='rgba('+shade+','+Math.min(202,shade+10)+','+Math.min(198,shade+7)+','+alpha.toFixed(3)+')';
+    x.beginPath();
+    x.moveTo(hx,hy);
+    x.quadraticCurveTo(midx,midy,px,py);
+    x.stroke();
+    count++;
+    sum+=d;
+    distances.push(d);
+  }
+  distances.sort((a,b)=>a-b);
+  lastCausalTraceMetrics={
+    count,
+    avgLength:count?+(sum/count).toFixed(4):0,
+    p95Length:count?+distances[Math.min(count-1,Math.floor(count*0.95))].toFixed(4):0
+  };
+  x.globalCompositeOperation='source-over';
+}
+const DEFAULT_RENDER_OPTIONS={causal:true,motion:true,shadows:true,dust:true,bodies:true,glints:true};
+let renderOptions=DEFAULT_RENDER_OPTIONS;
+let lastDrawMetrics={glintCount:0,activeCount:0};
+function drawWithOptions(options){
+  const prev=renderOptions;
+  renderOptions=Object.assign({},DEFAULT_RENDER_OPTIONS,options||{});
+  try{draw();}
+  finally{renderOptions=prev;}
+}
+function clearCanvasHard(){
+  x.setTransform(1,0,0,1,0,0);
+  x.globalAlpha=1;
+  x.globalCompositeOperation='copy';
+  x.fillStyle='#050606';
+  x.fillRect(0,0,W,H);
+  x.globalCompositeOperation='source-over';
+  lastDrawMetrics={glintCount:0,activeCount:0};
+  lastMotionTrailMetrics={count:0,avgDisplacement:0,p95Displacement:0};
+  lastCausalTraceMetrics={count:0,avgLength:0,p95Length:0};
+  prevReady=false;
+}
+function draw(){
+  const debugMode=(window.__debugField|0);
+  if(debugMode>0){
+    drawDebugField(debugMode);
+    return;
+  }
+  fadeBackground();
+  const out=views().out;
+  if(renderOptions.causal)drawCausalTraces(out);
+  if(renderOptions.motion)drawMotionTrails(out);
+  if(renderOptions.shadows)drawContactShadows(out);
+  if(renderOptions.dust)drawLooseDust(out);
+  if(renderOptions.bodies)drawBodies(out);
+  lastDrawMetrics=renderOptions.glints?drawGlints(out):{glintCount:0,activeCount:lastDrawMetrics.activeCount};
+  if(DEBUG){
+    const p=views().perf;
+    x.fillStyle='rgba(150,170,160,0.72)'; x.font=(12*DPR)+'px monospace';
+    x.fillText('WASM live steel  N='+TARGET+'  '+phaseName(p[1]|0)+'  '+perf.toFixed(1)+'ms  ['+PHRASES[p[2]|0]+']',10*DPR,20*DPR);
+  }
+}
+function stepAndDraw(dt){
+  const t0=performance.now();
+  wasm.sim_step(dt);
+  draw();
+  perf=perf*.92+(performance.now()-t0)*.08;
+}
+function frame(now){
+  const dt=Math.min(34,now-last); last=now;
+  if(running)stepAndDraw(dt);
+  requestAnimationFrame(frame);
+}
+function proofReport(){
+  const p=views().perf;
+  const glintRatio=lastDrawMetrics.activeCount?lastDrawMetrics.glintCount/lastDrawMetrics.activeCount:0;
+  return{
+    phase:phaseName(p[1]|0), phrase:PHRASES[p[2]|0], n:p[3],
+    avgActive:+p[4].toFixed(4), avgChain:+p[5].toFixed(4), p90Chain:+p[6].toFixed(4),
+    avgSpeed:+p[7].toFixed(4), pairCount:p[8], clampCount:p[9],
+    rustGlintCount:p[10], avgPressure:+p[11].toFixed(5), wandFront:+p[12].toFixed(2),
+    pairSaturationCount:p[15],
+    jsGlintCount:lastDrawMetrics.glintCount, jsActiveCount:lastDrawMetrics.activeCount,
+    motionTrailCount:lastMotionTrailMetrics.count,
+    motionTrailAvg:+lastMotionTrailMetrics.avgDisplacement,
+    motionTrailP95:+lastMotionTrailMetrics.p95Displacement,
+    causalTraceCount:lastCausalTraceMetrics.count,
+    causalTraceAvg:+lastCausalTraceMetrics.avgLength,
+    causalTraceP95:+lastCausalTraceMetrics.p95Length,
+    jsGlintRatio:+glintRatio.toFixed(4), perf:+perf.toFixed(2)
+  };
+}
+function debugPhrase(){
+  if(!wasm)return 0;
+  const p=views().perf;
+  return Math.max(0,Math.min(PHRASES.length-1,p[2]|0));
+}
+function fieldCopy(kind,phrase=debugPhrase()){
+  const ptr=wasm.debug_field_ptr(kind|0,phrase|0);
+  return Float32Array.from(new Float32Array(wasm.memory.buffer,ptr,FIELD_MAX));
+}
+function normalizedValue(v,max){
+  return Math.max(0,Math.min(1,v/Math.max(0.0001,max)));
+}
+function paintDebugScalar(mode,arr){
+  const im=dbgCtx.createImageData(FIELD_W,FIELD_H);
+  let max=1;
+  if(mode>=5){
+    max=0;
+    for(let i=0;i<arr.length;i++)if(arr[i]>max)max=arr[i];
+  }
+  for(let i=0;i<FIELD_MAX;i++){
+    const o=i*4;
+    let v=mode>=5?normalizedValue(arr[i],max):Math.max(0,Math.min(1,arr[i]));
+    let r=0,g=0,b=0,a=255;
+    if(mode===1){
+      r=g=b=16+Math.floor(v*222);
+    }else if(mode===2){
+      const sdf=(0.5-arr[i])*240;
+      const band=Math.exp(-Math.pow(Math.abs(sdf%18)/1.5,2));
+      const inside=sdf<0?0.42:0.12;
+      r=Math.floor(18+v*92+band*130);
+      g=Math.floor(24+inside*90+band*100);
+      b=Math.floor(26+inside*70+band*80);
+    }else if(mode===4){
+      r=Math.floor(26+v*210); g=Math.floor(20+v*126); b=Math.floor(18+v*36);
+    }else if(mode===5){
+      r=Math.floor(18+v*78); g=Math.floor(28+v*190); b=Math.floor(24+v*102);
+    }else if(mode===6){
+      r=Math.floor(18+v*142); g=Math.floor(24+v*154); b=Math.floor(26+v*156);
+    }else if(mode===7){
+      r=Math.floor(26+v*206); g=Math.floor(18+v*52); b=Math.floor(34+v*166);
+    }else if(mode===8){
+      r=Math.floor(20+v*174); g=Math.floor(23+v*180); b=Math.floor(22+v*160);
+    }else if(mode===9){
+      r=Math.floor(34+v*210); g=Math.floor(18+v*72); b=Math.floor(18+v*38);
+    }
+    im.data[o]=r; im.data[o+1]=g; im.data[o+2]=b; im.data[o+3]=a;
+  }
+  dbgCtx.putImageData(im,0,0);
+  x.imageSmoothingEnabled=false;
+  x.drawImage(dbgCanvas,0,0,W,H);
+  x.imageSmoothingEnabled=true;
+}
+function drawDebugTangent(){
+  x.globalCompositeOperation='source-over';
+  x.fillStyle='#050606';
+  x.fillRect(0,0,W,H);
+  const alpha=fieldCopy(0), tx=fieldCopy(6), ty=fieldCopy(8);
+  x.lineCap='butt';
+  x.lineWidth=Math.max(0.75,DPR);
+  for(let yy=2;yy<FIELD_H;yy+=4){
+    for(let xx=2;xx<FIELD_W;xx+=4){
+      const i=yy*FIELD_W+xx, a=alpha[i];
+      if(a<0.035)continue;
+      const vx=(tx[i]-0.5)*2, vy=(ty[i]-0.5)*2;
+      const px=(xx+0.5)*W/FIELD_W, py=(yy+0.5)*H/FIELD_H;
+      const len=(3.2+5.8*Math.min(1,a))*DPR;
+      x.strokeStyle='rgba(178,188,176,'+(0.20+0.52*Math.min(1,a)).toFixed(3)+')';
+      x.beginPath();
+      x.moveTo(px-vx*len,py-vy*len);
+      x.lineTo(px+vx*len,py+vy*len);
+      x.stroke();
+    }
+  }
+}
+function drawDebugField(mode){
+  if(!wasm)return;
+  if(mode===3){
+    drawDebugTangent();
+    return;
+  }
+  const rawKind={1:0,2:1,4:4,5:3,6:9,7:10,8:11,9:5}[mode] ?? 0;
+  x.globalCompositeOperation='source-over';
+  x.fillStyle='#050606';
+  x.fillRect(0,0,W,H);
+  paintDebugScalar(mode,fieldCopy(rawKind));
+}
+(async()=>{
+  resizeCanvas();
+  if(document.fonts)await document.fonts.ready;
+  const bytes=Uint8Array.from(atob(document.getElementById('wasmb64').textContent.trim()),c=>c.charCodeAt(0));
+  const {instance}=await WebAssembly.instantiate(bytes,{});
+  wasm=instance.exports;
+  wasm.sim_init(TARGET,FIXED_SEED);
+  OUT_STRIDE=wasm.out_stride();
+  PERF_STRIDE=wasm.perf_stride();
+  SLOT_STRIDE=wasm.slot_stride();
+  if(OUT_STRIDE!==14)throw new Error('OUT_STRIDE mismatch: '+OUT_STRIDE);
+  if(PERF_STRIDE!==16)throw new Error('PERF_STRIDE mismatch: '+PERF_STRIDE);
+  if(SLOT_STRIDE<TARGET)throw new Error('SLOT_STRIDE too small: '+SLOT_STRIDE);
+  rebuild();
+  addEventListener('resize',()=>{rebuild(); last=performance.now();});
+  requestAnimationFrame(frame);
+})();
+window.__debugField=0;
+window.__pause=()=>{running=false;};
+window.__play=()=>{running=true;last=performance.now();};
+window.__debug=(value=true)=>{DEBUG=!!value;draw();};
+window.__debugMode=(mode=0)=>{window.__debugField=mode|0;draw();};
+window.__to=(idx)=>{wasm.sim_to(idx|0);draw();};
+window.__reset=(seed=FIXED_SEED)=>{clearCanvasHard();wasm.sim_reset_seed(seed|0);wasm.sim_step(0);perf=0;draw();};
+window.__steps=(n)=>{for(let k=0;k<(n|0);k++)stepAndDraw(16.67);};
+window.__perf=()=>proofReport();
+window.__shot=()=>cv.toDataURL('image/png');
+window.__wand=()=>views().perf[12];
+window.__materialBins=(bins=16)=>{
+  const out=views().out, sums=Array(bins).fill(0), active=Array(bins).fill(0), field=Array(bins).fill(0);
+  for(let i=0;i<TARGET;i++){
+    const o=i*OUT_STRIDE, b=Math.max(0,Math.min(bins-1,Math.floor(out[o]/Math.max(1,W)*bins)));
+    sums[b]++; active[b]+=out[o+5]; field[b]+=out[o+6];
+  }
+  return{count:sums,active:active.map(v=>+v.toFixed(3)),field:field.map(v=>+v.toFixed(3))};
+};
+window.__abi=()=>({target:TARGET,outStride:OUT_STRIDE,perfStride:PERF_STRIDE,slotStride:SLOT_STRIDE,fieldW:FIELD_W,fieldH:FIELD_H,phrases:PHRASES.slice()});
+window.__field=(kind=2,phrase=debugPhrase())=>{
+  const ptr=wasm.debug_field_ptr(kind|0,phrase|0);
+  return new Float32Array(wasm.memory.buffer,ptr,FIELD_MAX);
+};
+window.__activationSums=()=>{
+  const sums=[];
+  for(let p=0;p<PHRASES.length;p++){
+    const a=window.__field(4,p);
+    let sum=0,max=0;
+    for(let i=0;i<a.length;i++){sum+=a[i];if(a[i]>max)max=a[i];}
+    sums.push({phrase:PHRASES[p],sum:+sum.toFixed(3),max:+max.toFixed(4)});
+  }
+  return sums;
+};
+window.__snapshot=()=>{
+  const out=views().out;
+  return{report:proofReport(),out:Array.from(out)};
+};
+function percentile(sorted,q){
+  if(!sorted.length)return 0;
+  return sorted[Math.min(sorted.length-1,Math.max(0,Math.floor((sorted.length-1)*q)))];
+}
+function statsOf(values){
+  if(!values.length)return{n:0,avg:0,p50:0,p90:0,p95:0,p99:0,max:0};
+  values.sort((a,b)=>a-b);
+  const sum=values.reduce((a,b)=>a+b,0);
+  return{
+    n:values.length,
+    avg:+(sum/values.length).toFixed(4),
+    p50:+percentile(values,0.50).toFixed(4),
+    p90:+percentile(values,0.90).toFixed(4),
+    p95:+percentile(values,0.95).toFixed(4),
+    p99:+percentile(values,0.99).toFixed(4),
+    max:+values[values.length-1].toFixed(4)
+  };
+}
+function axisAngleError(target,current){
+  let d=(target-current+Math.PI)%(Math.PI*2)-Math.PI;
+  if(d<-Math.PI)d+=Math.PI*2;
+  d=Math.abs(d);
+  return Math.min(d,Math.abs(Math.PI-d));
+}
+window.__slotAudit=(phrase=debugPhrase())=>{
+  const v=views(), out=v.out;
+  const phraseIdx=Math.max(0,Math.min(PHRASES.length-1,phrase|0));
+  const slotCount=Math.min(wasm.slot_count(phraseIdx)>>>0,TARGET,SLOT_STRIDE);
+  const base=phraseIdx*SLOT_STRIDE;
+  const dist=[], angle=[], materialValues=[], activeDist=[], birthToSlot=[], tracePx=[], traceRatio=[], rotationRad=[], captureTimes=[];
+  const worst=[];
+  let materialCount=0, lockedCount=0, capturedCount=0, tracedCount=0, rotatedCount=0, stateLockedCount=0;
+  let weighted=0, weightedLocked=0, weightedMaterial=0, weightedCaptured=0, weightedTraced=0, weightedRotated=0, weightedStateLocked=0;
+  for(let i=0;i<slotCount;i++){
+    const si=base+i, o=i*OUT_STRIDE;
+    const sx=v.slotFx[si]*W/FIELD_W, sy=v.slotFy[si]*H/FIELD_H;
+    const dx=sx-out[o], dy=sy-out[o+1], d=Math.hypot(dx,dy);
+    const bx=v.heapX[i], by=v.heapY[i];
+    const birthDist=Math.hypot(sx-bx,sy-by);
+    const traced=v.traceLen[i];
+    const tracedEnough=traced>=birthDist*0.72&&birthDist>80;
+    const rotated=v.rotationTrace[i];
+    const rotatedEnough=rotated>=0.72;
+    const captured=v.captureS[i]>=0;
+    const lockedState=v.particleState[i]>=6;
+    const targetAngle=Math.atan2(v.slotTy[si],v.slotTx[si]);
+    const angleErr=axisAngleError(targetAngle,out[o+2]);
+    const priority=Math.max(0.001,v.slotPriority[si]);
+    const material=materialOfOut(out,o);
+    const distanceLimit=Math.max(10,Math.min(W,H)*0.017);
+    const isMaterial=material>=0.18;
+    const isLocked=isMaterial&&d<=distanceLimit&&angleErr<=0.70;
+    dist.push(d);
+    angle.push(angleErr);
+    materialValues.push(material);
+    if(isMaterial){materialCount++;activeDist.push(d);}
+    if(isLocked)lockedCount++;
+    if(captured){capturedCount++;captureTimes.push(v.captureS[i]);}
+    if(tracedEnough)tracedCount++;
+    if(rotatedEnough)rotatedCount++;
+    if(lockedState)stateLockedCount++;
+    weighted+=priority;
+    if(isMaterial)weightedMaterial+=priority;
+    if(isLocked)weightedLocked+=priority;
+    if(captured)weightedCaptured+=priority;
+    if(tracedEnough)weightedTraced+=priority;
+    if(rotatedEnough)weightedRotated+=priority;
+    if(lockedState)weightedStateLocked+=priority;
+    birthToSlot.push(birthDist);
+    tracePx.push(traced);
+    traceRatio.push(birthDist>0?traced/birthDist:0);
+    rotationRad.push(rotated);
+    if(worst.length<12||d>worst[0].distance){
+      worst.push({
+        id:i,
+        slotId:i,
+        distance:+d.toFixed(3),
+        angle:+angleErr.toFixed(3),
+        material:+material.toFixed(3),
+        state:+v.particleState[i].toFixed(0),
+        captureTime:+v.captureS[i].toFixed(3),
+        birthToSlot:+birthDist.toFixed(3),
+        trace:+traced.toFixed(3),
+        rotation:+rotated.toFixed(3),
+        priority:+priority.toFixed(3),
+        x:+out[o].toFixed(2),
+        y:+out[o+1].toFixed(2),
+        birthX:+bx.toFixed(2),
+        birthY:+by.toFixed(2),
+        slotX:+sx.toFixed(2),
+        slotY:+sy.toFixed(2)
+      });
+      worst.sort((a,b)=>a.distance-b.distance);
+      if(worst.length>12)worst.shift();
+    }
+  }
+  worst.sort((a,b)=>b.distance-a.distance);
+  return{
+    phrase:PHRASES[phraseIdx],
+    phraseIndex:phraseIdx,
+    frame:proofReport(),
+    slotCount,
+    identityRatio:slotCount?+(Math.min(slotCount,TARGET)/slotCount).toFixed(4):0,
+    materialRatio:slotCount?+(materialCount/slotCount).toFixed(4):0,
+    lockedRatio:slotCount?+(lockedCount/slotCount).toFixed(4):0,
+    capturedRatio:slotCount?+(capturedCount/slotCount).toFixed(4):0,
+    tracedRatio:slotCount?+(tracedCount/slotCount).toFixed(4):0,
+    rotatedRatio:slotCount?+(rotatedCount/slotCount).toFixed(4):0,
+    stateLockedRatio:slotCount?+(stateLockedCount/slotCount).toFixed(4):0,
+    weightedMaterialRatio:weighted?+(weightedMaterial/weighted).toFixed(4):0,
+    weightedLockedRatio:weighted?+(weightedLocked/weighted).toFixed(4):0,
+    weightedCapturedRatio:weighted?+(weightedCaptured/weighted).toFixed(4):0,
+    weightedTracedRatio:weighted?+(weightedTraced/weighted).toFixed(4):0,
+    weightedRotatedRatio:weighted?+(weightedRotated/weighted).toFixed(4):0,
+    weightedStateLockedRatio:weighted?+(weightedStateLocked/weighted).toFixed(4):0,
+    distancePx:statsOf(dist),
+    activeDistancePx:statsOf(activeDist),
+    angleRad:statsOf(angle),
+    material:statsOf(materialValues),
+    birthToSlotPx:statsOf(birthToSlot),
+    tracePx:statsOf(tracePx),
+    traceToBirthRatio:statsOf(traceRatio),
+    rotationRad:statsOf(rotationRad),
+    captureTimeS:statsOf(captureTimes),
+    worst
+  };
+};
+function slotLockStats(phrase=debugPhrase(),shuffle=false){
+  const v=views(), out=v.out;
+  const phraseIdx=Math.max(0,Math.min(PHRASES.length-1,phrase|0));
+  const slotCount=Math.min(wasm.slot_count(phraseIdx)>>>0,TARGET,SLOT_STRIDE);
+  const base=phraseIdx*SLOT_STRIDE;
+  let stride=Math.max(1,slotCount-1);
+  const gcd=(a,b)=>{while(b){const t=a%b; a=b; b=t;} return Math.abs(a);};
+  while(stride>1&&gcd(stride,slotCount)!==1)stride--;
+  const offset=Math.floor(slotCount*0.37);
+  let materialCount=0,lockedCount=0;
+  let weighted=0,weightedLocked=0;
+  const dist=[],angle=[];
+  for(let si0=0;si0<slotCount;si0++){
+    const particle=shuffle?(si0*stride+offset)%slotCount:si0;
+    const si=base+si0, o=particle*OUT_STRIDE;
+    const sx=v.slotFx[si]*W/FIELD_W, sy=v.slotFy[si]*H/FIELD_H;
+    const dx=sx-out[o], dy=sy-out[o+1], d=Math.hypot(dx,dy);
+    const targetAngle=Math.atan2(v.slotTy[si],v.slotTx[si]);
+    const angleErr=axisAngleError(targetAngle,out[o+2]);
+    const priority=Math.max(0.001,v.slotPriority[si]);
+    const material=materialOfOut(out,o);
+    const distanceLimit=Math.max(10,Math.min(W,H)*0.017);
+    const isMaterial=material>=0.18;
+    const isLocked=isMaterial&&d<=distanceLimit&&angleErr<=0.70;
+    if(isMaterial)materialCount++;
+    if(isLocked)lockedCount++;
+    weighted+=priority;
+    if(isLocked)weightedLocked+=priority;
+    dist.push(d);
+    angle.push(angleErr);
+  }
+  return{
+    phrase:PHRASES[phraseIdx],
+    slotCount,
+    shuffle,
+    materialRatio:slotCount?+(materialCount/slotCount).toFixed(4):0,
+    lockedRatio:slotCount?+(lockedCount/slotCount).toFixed(4):0,
+    weightedLockedRatio:weighted?+(weightedLocked/weighted).toFixed(4):0,
+    distancePx:statsOf(dist),
+    angleRad:statsOf(angle)
+  };
+}
+function slotFlowAudit(phrase=debugPhrase()){
+  const v=views();
+  const phraseIdx=Math.max(0,Math.min(PHRASES.length-1,phrase|0));
+  const slotCount=Math.min(wasm.slot_count(phraseIdx)>>>0,TARGET,SLOT_STRIDE);
+  const base=phraseIdx*SLOT_STRIDE, angles=[];
+  let horizontal=0, nonHorizontal=0, vertical=0, sum=0;
+  for(let i=0;i<slotCount;i++){
+    let a=Math.atan2(v.slotTy[base+i],v.slotTx[base+i]);
+    a=Math.abs(((a+Math.PI/2)%Math.PI)-Math.PI/2);
+    const deg=a*180/Math.PI;
+    angles.push(deg);
+    sum+=deg;
+    if(deg<18)horizontal++; else nonHorizontal++;
+    if(deg>50)vertical++;
+  }
+  angles.sort((a,b)=>a-b);
+  return{
+    phrase:PHRASES[phraseIdx],
+    phraseIndex:phraseIdx,
+    slotCount,
+    horizontalRatio:slotCount?+(horizontal/slotCount).toFixed(4):0,
+    nonHorizontalRatio:slotCount?+(nonHorizontal/slotCount).toFixed(4):0,
+    verticalRatio:slotCount?+(vertical/slotCount).toFixed(4):0,
+    avgAbsDeg:slotCount?+(sum/slotCount).toFixed(4):0,
+    p90AbsDeg:slotCount?+angles[Math.min(slotCount-1,Math.floor(slotCount*0.90))].toFixed(4):0
+  };
+}
+function canvasFingerprint(){
+  const data=x.getImageData(0,0,W,H).data;
+  let hash=2166136261>>>0;
+  for(let i=0;i<data.length;i++){
+    hash^=data[i];
+    hash=Math.imul(hash,16777619)>>>0;
+  }
+  return hash.toString(16).padStart(8,'0');
+}
+function hardProductionDraw(){
+  DEBUG=false;
+  window.__debugField=0;
+  clearCanvasHard();
+  draw();
+  return{pixel:window.__pixelStats(),hash:canvasFingerprint(),report:proofReport()};
+}
+window.__identityShuffleAudit=(phrase=debugPhrase())=>{
+  const actual=slotLockStats(phrase,false);
+  const shuffled=slotLockStats(phrase,true);
+  return{
+    actual,
+    shuffled,
+    lockedDrop:+(actual.lockedRatio-shuffled.lockedRatio).toFixed(4),
+    weightedLockedDrop:+(actual.weightedLockedRatio-shuffled.weightedLockedRatio).toFixed(4)
+  };
+};
+window.__particleDependencyAudit=()=>{
+  const out=views().out;
+  const saved=Float32Array.from(out);
+  const production=hardProductionDraw();
+  for(let i=0;i<TARGET;i++){
+    const o=i*OUT_STRIDE;
+    out[o]=-9999;
+    out[o+1]=-9999;
+    out[o+5]=0;
+    out[o+6]=0;
+    out[o+7]=0;
+    out[o+8]=0;
+    out[o+9]=0;
+    out[o+12]=0;
+    out[o+13]=0;
+  }
+  const killed=hardProductionDraw();
+  out.set(saved);
+  const restored=hardProductionDraw();
+  return{
+    production,
+    killed,
+    restored,
+    litRatioDrop:+(production.pixel.litRatio-killed.pixel.litRatio).toFixed(6),
+    killedToProductionLitRatio:+(killed.pixel.litRatio/Math.max(0.000001,production.pixel.litRatio)).toFixed(6),
+    restoredMatches:production.hash===restored.hash
+  };
+};
+function glyphFieldArrays(){
+  const v=views();
+  return[
+    ['alpha',v.alpha],
+    ['sdf',v.sdf],
+    ['potential',v.potential],
+    ['fieldNx',v.fieldNx],
+    ['fieldNy',v.fieldNy],
+    ['fieldTx',v.fieldTx],
+    ['fieldTy',v.fieldTy],
+    ['targetRho',v.targetRho],
+    ['spine',v.spine],
+    ['anisotropy',v.anisotropy],
+    ['activation',v.activation],
+    ['meta',v.meta]
+  ];
+}
+window.__glyphFieldPoisonAudit=()=>{
+  const arrays=glyphFieldArrays();
+  const saved=arrays.map(([name,arr])=>[name,Float32Array.from(arr)]);
+  const production=hardProductionDraw();
+  for(const [name,arr] of arrays){
+    for(let i=0;i<arr.length;i++){
+      arr[i]=(((i*17+name.length*13)%31)-15)*0.073;
+    }
+  }
+  const poisoned=hardProductionDraw();
+  arrays.forEach(([name,arr],idx)=>arr.set(saved[idx][1]));
+  const restored=hardProductionDraw();
+  return{
+    fields:arrays.map(([name,arr])=>({name,length:arr.length})),
+    production,
+    poisoned,
+    restored,
+    poisonUnchanged:production.hash===poisoned.hash,
+    restoredMatches:production.hash===restored.hash,
+    productionLit:production.pixel.litRatio,
+    poisonedLit:poisoned.pixel.litRatio
+  };
+};
+window.__debugTargetIsolationAudit=()=>{
+  const production=hardProductionDraw();
+  window.__debugField=1;
+  clearCanvasHard();
+  draw();
+  const debug={pixel:window.__pixelStats(),hash:canvasFingerprint()};
+  const restored=hardProductionDraw();
+  return{
+    production,
+    debug,
+    restored,
+    debugDiffers:production.hash!==debug.hash,
+    restoredMatches:production.hash===restored.hash
+  };
+};
+function depositCoverage(occ,px,py,amount){
+  const fx=Math.max(0,Math.min(FIELD_W-1,px/Math.max(1,W)*(FIELD_W-1)));
+  const fy=Math.max(0,Math.min(FIELD_H-1,py/Math.max(1,H)*(FIELD_H-1)));
+  const x0=Math.floor(fx), y0=Math.floor(fy), x1=Math.min(FIELD_W-1,x0+1), y1=Math.min(FIELD_H-1,y0+1);
+  const tx=fx-x0, ty=fy-y0;
+  occ[y0*FIELD_W+x0]+=(1-tx)*(1-ty)*amount;
+  occ[y0*FIELD_W+x1]+=tx*(1-ty)*amount;
+  occ[y1*FIELD_W+x0]+=(1-tx)*ty*amount;
+  occ[y1*FIELD_W+x1]+=tx*ty*amount;
+}
+function coverageRegionRect(alpha,occ,x0,x1,y0,y1){
+  const xa=Math.max(0,Math.min(FIELD_W,Math.floor(x0)));
+  const xb=Math.max(xa,Math.min(FIELD_W,Math.ceil(x1)));
+  const ya=Math.max(0,Math.min(FIELD_H,Math.floor(y0)));
+  const yb=Math.max(ya,Math.min(FIELD_H,Math.ceil(y1)));
+  let support=0,covered=0,strong=0,weak=0,sumAlpha=0,sumOcc=0,holeSupport=0,holeCovered=0;
+  for(let yy=ya;yy<yb;yy++)for(let xx=xa;xx<xb;xx++){
+    const i=yy*FIELD_W+xx, a=alpha[i], o=occ[i];
+    if(a>0.12){
+      support++; sumAlpha+=a; sumOcc+=o;
+      if(o>0.030)covered++; else weak++;
+      if(o>0.090)strong++;
+    }else if(a<0.025){
+      holeSupport++;
+      if(o>0.080)holeCovered++;
+    }
+  }
+  return{
+    support,
+    coveredRatio:support?+(covered/support).toFixed(4):0,
+    strongRatio:support?+(strong/support).toFixed(4):0,
+    occPerAlpha:+(sumOcc/Math.max(0.0001,sumAlpha)).toFixed(4),
+    weak,
+    holePreservation:holeSupport?+(1-holeCovered/holeSupport).toFixed(4):1
+  };
+}
+function coverageRegion(alpha,occ,y0,y1){
+  return coverageRegionRect(alpha,occ,0,FIELD_W,y0,y1);
+}
+function shapeMatchRect(alpha,occ,block,x0=0,x1=FIELD_W,y0=0,y1=FIELD_H){
+  const xa=Math.max(0,Math.min(FIELD_W,Math.floor(x0)));
+  const xb=Math.max(xa,Math.min(FIELD_W,Math.ceil(x1)));
+  const ya=Math.max(0,Math.min(FIELD_H,Math.floor(y0)));
+  const yb=Math.max(ya,Math.min(FIELD_H,Math.ceil(y1)));
+  let tp=0,fp=0,fn=0,tn=0;
+  for(let by=ya;by<yb;by+=block){
+    for(let bx=xa;bx<xb;bx+=block){
+      let aSum=0,oSum=0,n=0;
+      for(let yy=by;yy<Math.min(yb,by+block);yy++){
+        for(let xx=bx;xx<Math.min(xb,bx+block);xx++){
+          const i=yy*FIELD_W+xx;
+          aSum+=alpha[i]; oSum+=occ[i]; n++;
+        }
+      }
+      const target=aSum/Math.max(1,n)>0.12;
+      const materialThreshold=block>=4?0.040:0.030;
+      const material=oSum/Math.max(1,n)>materialThreshold;
+      if(target&&material)tp++;
+      else if(!target&&material)fp++;
+      else if(target&&!material)fn++;
+      else tn++;
+    }
+  }
+  const precision=tp/Math.max(1,tp+fp);
+  const recall=tp/Math.max(1,tp+fn);
+  const iou=tp/Math.max(1,tp+fp+fn);
+  const f1=(2*precision*recall)/Math.max(0.0001,precision+recall);
+  return{block,tp,fp,fn,tn,precision:+precision.toFixed(4),recall:+recall.toFixed(4),iou:+iou.toFixed(4),f1:+f1.toFixed(4)};
+}
+function shapeMatchRegion(alpha,occ,block){
+  return shapeMatchRect(alpha,occ,block,0,FIELD_W,0,FIELD_H);
+}
+function alphaBoundsInRect(alpha,x0,x1,y0,y1){
+  let minX=FIELD_W,maxX=0,minY=FIELD_H,maxY=0,support=0;
+  for(let yy=y0;yy<y1;yy++)for(let xx=x0;xx<x1;xx++){
+    if(alpha[yy*FIELD_W+xx]<=0.12)continue;
+    if(xx<minX)minX=xx;if(xx>maxX)maxX=xx;
+    if(yy<minY)minY=yy;if(yy>maxY)maxY=yy;
+    support++;
+  }
+  return support?{minX,maxX,maxY,minY,support}:null;
+}
+function glyphWindows(phraseIdx,alpha){
+  const phrase=PHRASES[phraseIdx];
+  const o=document.createElement('canvas'); o.width=FIELD_W; o.height=FIELD_H;
+  const g=o.getContext('2d',{willReadFrequently:true});
+  const plan=planTextRaster(phrase,g);
+  const windows=[];
+  let index=0;
+  for(let li=0;li<plan.linePlans.length;li++){
+    const line=plan.linePlans[li];
+    const yPad=Math.max(2,plan.fs*0.16);
+    const baseY0=Math.floor(Math.max(0,line.y-plan.fs*0.66-yPad));
+    const baseY1=Math.ceil(Math.min(FIELD_H,line.y+plan.fs*0.52+yPad));
+    for(let ci=0;ci<line.line.length;ci++){
+      const ch=line.line[ci];
+      const before=line.edges[ci];
+      const after=line.edges[ci+1];
+      const xPad=Math.max(1.5,plan.fs*0.045);
+      let x0=Math.floor(Math.max(0,line.x0+before-xPad));
+      let x1=Math.ceil(Math.min(FIELD_W,line.x0+after+xPad));
+      let y0=baseY0, y1=baseY1;
+      const kind=/\s/.test(ch)?'space':'letter';
+      if(kind==='letter'){
+        const tight=alphaBoundsInRect(alpha,x0,x1,y0,y1);
+        if(tight){
+          x0=Math.max(0,tight.minX-1); x1=Math.min(FIELD_W,tight.maxX+2);
+          y0=Math.max(0,tight.minY-1); y1=Math.min(FIELD_H,tight.maxY+2);
+        }
+      }
+      windows.push({kind,ch,index,line:li,column:ci,x0,x1,y0,y1,width:x1-x0,height:y1-y0});
+      index++;
+    }
+  }
+  return windows;
+}
+function gapIntrusion(alpha,occ,win){
+  let cells=0,hot=0,mass=0,maxOcc=0;
+  for(let yy=win.y0;yy<win.y1;yy++)for(let xx=win.x0;xx<win.x1;xx++){
+    const i=yy*FIELD_W+xx;
+    if(alpha[i]>=0.025)continue;
+    const o=occ[i];
+    cells++;
+    mass+=o;
+    if(o>maxOcc)maxOcc=o;
+    if(o>0.080)hot++;
+  }
+  return{
+    cells,
+    hot,
+    intrusionRatio:cells?+(hot/cells).toFixed(4):0,
+    occMass:+mass.toFixed(4),
+    maxOcc:+maxOcc.toFixed(4)
+  };
+}
+function minMetric(items,read,fallback=1){
+  if(!items.length)return fallback;
+  let best=Infinity;
+  for(const item of items)best=Math.min(best,read(item));
+  return +best.toFixed(4);
+}
+function maxMetric(items,read,fallback=0){
+  if(!items.length)return fallback;
+  let best=-Infinity;
+  for(const item of items)best=Math.max(best,read(item));
+  return +best.toFixed(4);
+}
+function letterAuditFromOcc(alpha,occ,phraseIdx){
+  const letters=[],spaces=[];
+  for(const win of glyphWindows(phraseIdx,alpha)){
+    if(win.kind==='letter'){
+      const all=coverageRegionRect(alpha,occ,win.x0,win.x1,win.y0,win.y1);
+      const shape2=shapeMatchRect(alpha,occ,2,win.x0,win.x1,win.y0,win.y1);
+      const shape4=shapeMatchRect(alpha,occ,4,win.x0,win.x1,win.y0,win.y1);
+      letters.push(Object.assign({},win,{all,shape2,shape4}));
+    }else{
+      spaces.push(Object.assign({},win,{gap:gapIntrusion(alpha,occ,win)}));
+    }
+  }
+  return{
+    phrase:PHRASES[phraseIdx],
+    letterCount:letters.length,
+    spaceCount:spaces.length,
+    minCoverage:minMetric(letters,item=>item.all.coveredRatio),
+    minStrong:minMetric(letters,item=>item.all.strongRatio),
+    minShape2Iou:minMetric(letters,item=>item.shape2.iou),
+    minShape4Iou:minMetric(letters,item=>item.shape4.iou),
+    minHolePreservation:minMetric(letters,item=>item.all.holePreservation),
+    maxCoverage:maxMetric(letters,item=>item.all.coveredRatio),
+    maxStrong:maxMetric(letters,item=>item.all.strongRatio),
+    maxShape2Iou:maxMetric(letters,item=>item.shape2.iou),
+    maxShape4Iou:maxMetric(letters,item=>item.shape4.iou),
+    maxWeak:maxMetric(letters,item=>item.all.weak),
+    maxSpaceIntrusion:maxMetric(spaces,item=>item.gap.intrusionRatio),
+    maxSpaceOccMass:maxMetric(spaces,item=>item.gap.occMass),
+    letters,
+    spaces
+  };
+}
+function canvasOccupancyField(){
+  const data=x.getImageData(0,0,W,H).data;
+  const occ=new Float32Array(FIELD_MAX);
+  const counts=new Uint16Array(FIELD_MAX);
+  for(let py=0;py<H;py++){
+    const fy=Math.max(0,Math.min(FIELD_H-1,Math.floor(py/Math.max(1,H)*FIELD_H)));
+    for(let px=0;px<W;px++){
+      const p=(py*W+px)*4;
+      const m=Math.max(data[p],data[p+1],data[p+2]);
+      if(m<=32)continue;
+      const fx=Math.max(0,Math.min(FIELD_W-1,Math.floor(px/Math.max(1,W)*FIELD_W)));
+      const i=fy*FIELD_W+fx;
+      occ[i]=Math.max(occ[i],(m-32)/223);
+      counts[i]++;
+    }
+  }
+  for(let i=0;i<FIELD_MAX;i++){
+    if(counts[i]>0)occ[i]=Math.max(occ[i],Math.min(1,counts[i]*0.045));
+  }
+  return occ;
+}
+function canvasShapeAudit(phrase=debugPhrase()){
+  const phraseIdx=Math.max(0,Math.min(PHRASES.length-1,phrase|0));
+  const alpha=fieldCopy(0,phraseIdx), occ=canvasOccupancyField();
+  return{
+    phrase:PHRASES[phraseIdx],
+    all:coverageRegion(alpha,occ,0,FIELD_H),
+    shape2:shapeMatchRegion(alpha,occ,2),
+    shape4:shapeMatchRegion(alpha,occ,4),
+    letters:letterAuditFromOcc(alpha,occ,phraseIdx),
+    pixel:window.__pixelStats(),
+    hash:canvasFingerprint()
+  };
+}
+window.__renderVariantAudit=(phrase=debugPhrase())=>{
+  const variants={
+    production:{},
+    noGlints:{glints:false},
+    noTrails:{causal:false,motion:false},
+    noAtmosphere:{causal:false,motion:false,dust:false},
+    bareRods:{causal:false,motion:false,shadows:false,dust:false,glints:false,bodies:true}
+  };
+  const out={};
+  for(const name of Object.keys(variants)){
+    DEBUG=false;
+    window.__debugField=0;
+    clearCanvasHard();
+    drawWithOptions(variants[name]);
+    out[name]=Object.assign({options:variants[name]},canvasShapeAudit(phrase));
+  }
+  out.restored=hardProductionDraw();
+  return out;
+};
+function particleCoverage(phrase=debugPhrase(),mode='all'){
+  const out=views().out, alpha=fieldCopy(0,phrase|0), occ=new Float32Array(FIELD_MAX);
+  const phraseIdx=Math.max(0,Math.min(PHRASES.length-1,phrase|0));
+  const slotCount=Math.min(wasm.slot_count(phraseIdx)>>>0,TARGET,SLOT_STRIDE);
+  let used=0;
+  for(let i=0;i<TARGET;i++){
+    if(mode==='primary'&&i>=slotCount)continue;
+    if(mode==='secondary'&&i<slotCount)continue;
+    const o=i*OUT_STRIDE;
+    const material=materialOfOut(out,o);
+    if(material<0.10)continue;
+    used++;
+    const px=out[o], py=out[o+1], a=out[o+2], len=out[o+3], rad=out[o+4];
+    const amount=material*(0.60+rad*0.24)/5;
+    const ca=Math.cos(a), sa=Math.sin(a);
+    for(let k=0;k<5;k++){
+      const u=k/4-0.5;
+      depositCoverage(occ,px+ca*len*u,py+sa*len*u,amount);
+    }
+  }
+  const topEnd=Math.floor(FIELD_H*0.52);
+  return{
+    mode,slotCount,used,
+    all:coverageRegion(alpha,occ,0,FIELD_H),
+    top:coverageRegion(alpha,occ,0,topEnd),
+    bottom:coverageRegion(alpha,occ,topEnd,FIELD_H),
+    shape2:shapeMatchRegion(alpha,occ,2),
+    shape4:shapeMatchRegion(alpha,occ,4),
+    letters:letterAuditFromOcc(alpha,occ,phraseIdx)
+  };
+}
+function alphaAtField(alpha,fx,fy){
+  const xx=Math.max(0,Math.min(FIELD_W-1,Math.round(fx)));
+  const yy=Math.max(0,Math.min(FIELD_H-1,Math.round(fy)));
+  return alpha[yy*FIELD_W+xx];
+}
+function supportCellsOf(alpha){
+  const cells=[];
+  for(let yy=0;yy<FIELD_H;yy++)for(let xx=0;xx<FIELD_W;xx++){
+    if(alpha[yy*FIELD_W+xx]>0.12)cells.push([xx,yy]);
+  }
+  return cells;
+}
+function nearestSupportDistance(cells,fx,fy){
+  let best=1e9;
+  for(const cell of cells){
+    const dx=fx-cell[0], dy=fy-cell[1], d2=dx*dx+dy*dy;
+    if(d2<best)best=d2;
+  }
+  return Math.sqrt(best);
+}
+function secondaryHaloAudit(phrase=debugPhrase()){
+  const out=views().out, alpha=fieldCopy(0,phrase|0);
+  const phraseIdx=Math.max(0,Math.min(PHRASES.length-1,phrase|0));
+  const slotCount=Math.min(wasm.slot_count(phraseIdx)>>>0,TARGET,SLOT_STRIDE);
+  const support=supportCellsOf(alpha);
+  const distances=[], materials=[];
+  let materialCount=0, haloCount=0, insideCount=0, farCount=0;
+  for(let i=slotCount;i<TARGET;i++){
+    const o=i*OUT_STRIDE;
+    const material=materialOfOut(out,o);
+    if(material<0.10)continue;
+    materialCount++;
+    materials.push(material);
+    const px=out[o], py=out[o+1], a=out[o+2], len=out[o+3];
+    const ca=Math.cos(a), sa=Math.sin(a);
+    let minDist=1e9, maxAlpha=0;
+    for(let k=0;k<5;k++){
+      const u=k/4-0.5;
+      const fx=Math.max(0,Math.min(FIELD_W-1,(px+ca*len*u)/Math.max(1,W)*(FIELD_W-1)));
+      const fy=Math.max(0,Math.min(FIELD_H-1,(py+sa*len*u)/Math.max(1,H)*(FIELD_H-1)));
+      maxAlpha=Math.max(maxAlpha,alphaAtField(alpha,fx,fy));
+      minDist=Math.min(minDist,nearestSupportDistance(support,fx,fy));
+    }
+    distances.push(minDist);
+    const inside=maxAlpha>0.12||minDist<1.5;
+    const halo=!inside&&minDist>=2.0&&minDist<=28.0;
+    if(inside)insideCount++;
+    else if(halo)haloCount++;
+    else farCount++;
+  }
+  const secondaryTotal=Math.max(0,TARGET-slotCount);
+  return{
+    mode:'secondary-halo',
+    slotCount,
+    secondaryTotal,
+    materialCount,
+    haloCount,
+    insideCount,
+    farCount,
+    haloRatio:materialCount?+(haloCount/materialCount).toFixed(4):0,
+    insideRatio:materialCount?+(insideCount/materialCount).toFixed(4):0,
+    farRatio:materialCount?+(farCount/materialCount).toFixed(4):0,
+    distanceCells:statsOf(distances),
+    material:statsOf(materials)
+  };
+}
+function provenanceStats(items){
+  const birthDistance=items.map((item)=>item.birthDist);
+  const trace=items.map((item)=>item.trace);
+  const ratio=items.map((item)=>item.ratio);
+  const rotation=items.map((item)=>item.rotation);
+  const material=items.map((item)=>item.material);
+  return{
+    count:items.length,
+    birthDistancePx:statsOf(birthDistance),
+    tracePx:statsOf(trace),
+    traceToBirthRatio:statsOf(ratio),
+    rotationRad:statsOf(rotation),
+    material:statsOf(material),
+    lowTraceRatioCount:items.filter((item)=>item.ratio<0.72).length,
+    shortTraceCount:items.filter((item)=>item.trace<48).length,
+    lowRotationCount:items.filter((item)=>item.rotation<0.25).length
+  };
+}
+function visibleProvenanceAudit(phrase=debugPhrase()){
+  const out=views().out, v=views();
+  const phraseIdx=Math.max(0,Math.min(PHRASES.length-1,phrase|0));
+  const slotCount=Math.min(wasm.slot_count(phraseIdx)>>>0,TARGET,SLOT_STRIDE);
+  const all=[], primary=[], secondary=[];
+  for(let i=0;i<TARGET;i++){
+    const o=i*OUT_STRIDE;
+    const material=materialOfOut(out,o);
+    if(material<0.10)continue;
+    const dx=out[o]-v.heapX[i], dy=out[o+1]-v.heapY[i];
+    const birthDist=Math.hypot(dx,dy);
+    const trace=v.traceLen[i];
+    const item={
+      id:i,
+      kind:i<slotCount?'primary':'secondary',
+      material,
+      birthDist,
+      trace,
+      ratio:birthDist>0?trace/birthDist:0,
+      rotation:v.rotationTrace[i],
+      state:v.particleState[i]
+    };
+    all.push(item);
+    (i<slotCount?primary:secondary).push(item);
+  }
+  return{
+    phrase:PHRASES[phraseIdx],
+    slotCount,
+    total:TARGET,
+    all:provenanceStats(all),
+    primary:provenanceStats(primary),
+    secondary:provenanceStats(secondary)
+  };
+}
+function birthMaterialAudit(phrase=debugPhrase()){
+  const out=views().out;
+  const phraseIdx=Math.max(0,Math.min(PHRASES.length-1,phrase|0));
+  const slotCount=Math.min(wasm.slot_count(phraseIdx)>>>0,TARGET,SLOT_STRIDE);
+  const materialValues=[], birthOnlyValues=[], captureGlowValues=[];
+  let visibleCount=0, birthOnlyCount=0, letterMaterialCount=0, capturedLikeCount=0;
+  for(let i=0;i<slotCount;i++){
+    const o=i*OUT_STRIDE;
+    const active=out[o+5], field=out[o+6], chain=out[o+7];
+    const material=materialOfOut(out,o);
+    const captureGlow=Math.max(active,field,chain);
+    const visible=material>=0.075;
+    if(!visible)continue;
+    visibleCount++;
+    materialValues.push(material);
+    captureGlowValues.push(captureGlow);
+    if(captureGlow<0.10){
+      birthOnlyCount++;
+      birthOnlyValues.push(material);
+    }else{
+      capturedLikeCount++;
+    }
+    if(material>=0.18)letterMaterialCount++;
+  }
+  return{
+    phrase:PHRASES[phraseIdx],
+    slotCount,
+    visibleCount,
+    birthOnlyCount,
+    capturedLikeCount,
+    letterMaterialCount,
+    primaryVisibleRatio:slotCount?+(visibleCount/slotCount).toFixed(4):0,
+    birthOnlyRatio:visibleCount?+(birthOnlyCount/visibleCount).toFixed(4):0,
+    capturedLikeRatio:visibleCount?+(capturedLikeCount/visibleCount).toFixed(4):0,
+    letterMaterialRatio:visibleCount?+(letterMaterialCount/visibleCount).toFixed(4):0,
+    material:statsOf(materialValues),
+    birthOnlyMaterial:statsOf(birthOnlyValues),
+    captureGlow:statsOf(captureGlowValues)
+  };
+}
+function materialOfOut(out,o){
+  const active=out[o+5], field=out[o+6], chain=out[o+7], depth=out[o+10]||0, rough=out[o+11]||0, structural=out[o+13]||0;
+  const locked=Math.max(field,chain*0.68);
+  const birthMetal=structural>0?0.105+0.020*depth+0.010*(1-rough):0;
+  return Math.max(birthMetal,field*1.05,chain*0.72,active*locked);
+}
+window.__continuityAudit=(frames=330,teleportLimit=14)=>{
+  running=false;
+  DEBUG=false;
+  window.__debugField=0;
+  window.__reset(2246);
+  wasm.sim_step(0);
+  let prev=Float32Array.from(views().out);
+  const all=[], material=[], frameMax=[];
+  let teleportCount=0, materialTeleportCount=0;
+  const worst=[];
+  const count=Math.max(1,frames|0);
+  for(let frame=1;frame<=count;frame++){
+    wasm.sim_step(16.67);
+    const cur=views().out;
+    let maxD=0;
+    for(let i=0;i<TARGET;i++){
+      const o=i*OUT_STRIDE;
+      const dx=cur[o]-prev[o], dy=cur[o+1]-prev[o+1];
+      const d=Math.hypot(dx,dy);
+      const m=Math.max(materialOfOut(prev,o),materialOfOut(cur,o));
+      all.push(d);
+      if(m>=0.10)material.push(d);
+      if(d>maxD)maxD=d;
+      if(d>teleportLimit){
+        teleportCount++;
+        if(m>=0.10)materialTeleportCount++;
+        if(worst.length<16){
+          worst.push({frame,id:i,d:+d.toFixed(3),material:+m.toFixed(3),x:+cur[o].toFixed(2),y:+cur[o+1].toFixed(2)});
+        }
+      }
+    }
+    frameMax.push(maxD);
+    prev=Float32Array.from(cur);
+  }
+  draw();
+  return{
+    frames:count,
+    teleportLimit,
+    all:statsOf(all),
+    material:statsOf(material),
+    frameMax:statsOf(frameMax),
+    teleportCount,
+    materialTeleportCount,
+    worst
+  };
+};
+window.__coverage=(phrase=debugPhrase())=>particleCoverage(phrase,'all');
+window.__primaryCoverage=(phrase=debugPhrase())=>particleCoverage(phrase,'primary');
+window.__secondaryCoverage=(phrase=debugPhrase())=>particleCoverage(phrase,'secondary');
+window.__secondaryHalo=(phrase=debugPhrase())=>secondaryHaloAudit(phrase);
+window.__visibleProvenanceAudit=(phrase=debugPhrase())=>visibleProvenanceAudit(phrase);
+window.__birthMaterialAudit=(phrase=debugPhrase())=>birthMaterialAudit(phrase);
+window.__slotFlowAudit=(phrase=debugPhrase())=>slotFlowAudit(phrase);
+window.__letterAudit=(phrase=debugPhrase(),mode='primary')=>particleCoverage(phrase,mode).letters;
+function downsampledCoverageRegion(alpha,occ,block){
+  let support=0,covered=0,strong=0,holeSupport=0,holeCovered=0,sumAlpha=0,sumOcc=0,weak=0;
+  for(let by=0;by<FIELD_H;by+=block){
+    for(let bx=0;bx<FIELD_W;bx+=block){
+      let aSum=0,oSum=0,n=0;
+      for(let yy=by;yy<Math.min(FIELD_H,by+block);yy++){
+        for(let xx=bx;xx<Math.min(FIELD_W,bx+block);xx++){
+          const i=yy*FIELD_W+xx;
+          aSum+=alpha[i]; oSum+=occ[i]; n++;
+        }
+      }
+      const a=aSum/Math.max(1,n), o=oSum/Math.max(1,n);
+      if(a>0.12){
+        support++; sumAlpha+=a; sumOcc+=o;
+        if(o>0.030)covered++; else weak++;
+        if(o>0.090)strong++;
+      }else if(a<0.025){
+        holeSupport++;
+        if(o>0.080)holeCovered++;
+      }
+    }
+  }
+  return{
+    block,
+    support,
+    coveredRatio:support?+(covered/support).toFixed(4):0,
+    strongRatio:support?+(strong/support).toFixed(4):0,
+    occPerAlpha:+(sumOcc/Math.max(0.0001,sumAlpha)).toFixed(4),
+    weak,
+    holePreservation:holeSupport?+(1-holeCovered/holeSupport).toFixed(4):1
+  };
+}
+function slotLatticeCoverage(phrase,fillRatio){
+  const phraseIdx=Math.max(0,Math.min(PHRASES.length-1,phrase|0));
+  const v=views(), alpha=fieldCopy(0,phraseIdx), occ=new Float32Array(FIELD_MAX);
+  const slotCount=Math.min(wasm.slot_count(phraseIdx)>>>0,TARGET,SLOT_STRIDE);
+  const base=phraseIdx*SLOT_STRIDE, ranked=[];
+  for(let i=0;i<slotCount;i++){
+    const priority=Math.max(0.001,v.slotPriority[base+i]);
+    const tie=hashUnit((i+1)*2654435761+phraseIdx*1013904223);
+    ranked.push({i,score:priority*0.92+(1-tie)*0.08,priority});
+  }
+  ranked.sort((a,b)=>b.score-a.score);
+  const selected=Math.max(0,Math.min(slotCount,Math.round(slotCount*fillRatio)));
+  for(let r=0;r<selected;r++){
+    const item=ranked[r], si=base+item.i;
+    const px=v.slotFx[si]*W/FIELD_W, py=v.slotFy[si]*H/FIELD_H;
+    const a=Math.atan2(v.slotTy[si],v.slotTx[si]);
+    const len=2.2+item.priority*3.2;
+    const amount=(0.64+item.priority*0.34)/5;
+    const ca=Math.cos(a), sa=Math.sin(a);
+    for(let k=0;k<5;k++){
+      const u=k/4-0.5;
+      depositCoverage(occ,px+ca*len*u,py+sa*len*u,amount);
+    }
+  }
+  return{alpha,occ,slotCount,selected};
+}
+window.__staticLatticeAudit=(phrase=debugPhrase(),fills=[1,0.8,0.6])=>{
+  const phraseIdx=Math.max(0,Math.min(PHRASES.length-1,phrase|0));
+  return{
+    phrase:PHRASES[phraseIdx],
+    phraseIndex:phraseIdx,
+    fills:fills.map(fill=>{
+      const c=slotLatticeCoverage(phraseIdx,Math.max(0,Math.min(1,+fill)));
+      return{
+        fillRatio:+fill,
+        slotCount:c.slotCount,
+        selected:c.selected,
+        all:coverageRegion(c.alpha,c.occ,0,FIELD_H),
+        small2:downsampledCoverageRegion(c.alpha,c.occ,2),
+        small4:downsampledCoverageRegion(c.alpha,c.occ,4),
+        shape2:shapeMatchRegion(c.alpha,c.occ,2),
+        shape4:shapeMatchRegion(c.alpha,c.occ,4),
+        letters:letterAuditFromOcc(c.alpha,c.occ,phraseIdx)
+      };
+    })
+  };
+};
+window.__motionProbe=(steps=1)=>{
+  running=false;
+  const before=views().out.slice();
+  window.__steps(Math.max(1,steps|0));
+  const after=views().out;
+  const active=[],loose=[];
+  for(let i=0;i<TARGET;i++){
+    const o=i*OUT_STRIDE;
+    const material=Math.max(before[o+5],before[o+6]*0.86,before[o+7]*0.58);
+    const dx=after[o]-before[o], dy=after[o+1]-before[o+1];
+    const d=Math.sqrt(dx*dx+dy*dy);
+    if(material>0.28)active.push(d);
+    if(material<0.08)loose.push(d);
+  }
+  const stat=arr=>{
+    arr.sort((a,b)=>a-b);
+    const n=arr.length, sum=arr.reduce((a,b)=>a+b,0);
+    return{
+      n,
+      avg:n?+(sum/n).toFixed(4):0,
+      p50:n?+arr[Math.floor(n*0.50)].toFixed(4):0,
+      p95:n?+arr[Math.min(n-1,Math.floor(n*0.95))].toFixed(4):0,
+      max:n?+arr[n-1].toFixed(4):0
+    };
+  };
+  return{steps,active:stat(active),loose:stat(loose),report:proofReport()};
+};
+window.__simOnly=(frames=600)=>{
+  running=false; DEBUG=false; window.__debugField=0; window.__reset(FIXED_SEED);
+  const count=Math.max(1,frames|0), t0=performance.now();
+  for(let k=0;k<count;k++)wasm.sim_step(16.67);
+  const elapsed=performance.now()-t0;
+  draw();
+  return{frames:count,msPerStep:+(elapsed/count).toFixed(4),report:proofReport(),coverage:window.__coverage(debugPhrase())};
+};
+window.__pixelStats=()=>{
+  const data=x.getImageData(0,0,W,H).data;
+  let maxRGB=0,over128=0,over180=0,whiteish=0,blueDominant=0,lit=0;
+  for(let i=0;i<data.length;i+=4){
+    const r=data[i],g=data[i+1],b=data[i+2],m=Math.max(r,g,b);
+    if(m>maxRGB)maxRGB=m;
+    if(m>128)over128++;
+    if(m>180)over180++;
+    if(r>170&&g>170&&b>160)whiteish++;
+    if(b>48&&b>r*1.08&&b>g*1.04)blueDominant++;
+    if(m>32)lit++;
+  }
+  const total=data.length/4;
+  return{
+    total,maxRGB,over128,over180,whiteish,blueDominant,lit,
+    over128Ratio:+(over128/total).toFixed(6),
+    over180Ratio:+(over180/total).toFixed(6),
+    blueDominantRatio:+(blueDominant/total).toFixed(6),
+    litRatio:+(lit/total).toFixed(6)
+  };
+};
+window.__captureProofSet=async()=>{
+  running=false; DEBUG=false; window.__debugField=0; window.__reset(FIXED_SEED);
+  let done=0; const frames=[];
+  for(const frame of PROOF_FRAMES){
+    window.__steps(frame-done); done=frame;
+    frames.push({frame,dataUrl:cv.toDataURL('image/png'),report:proofReport(),pixel:window.__pixelStats(),coverage:window.__coverage(debugPhrase())});
+  }
+  return frames;
+};
+window.__captureDebugSet=async(frame=330)=>{
+  running=false; DEBUG=false; window.__debugField=0; window.__reset(FIXED_SEED); window.__steps(frame|0);
+  const modes=[1,2,3,4,5,6,7,8,9], frames=[];
+  for(const mode of modes){
+    window.__debugField=mode; draw();
+    frames.push({mode,dataUrl:cv.toDataURL('image/png')});
+  }
+  window.__debugField=0; draw();
+  return frames;
+};
+</script>

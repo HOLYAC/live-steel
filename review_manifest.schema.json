@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "live-steel-review-manifest-v2",
+  "type": "object",
+  "required": ["schema", "release_eligible", "paths", "hashes", "toolchain", "origin"],
+  "properties": {
+    "schema": { "const": "live-steel-review-manifest-v2" },
+    "release_eligible": { "type": "boolean" },
+    "paths": { "type": "object" },
+    "hashes": { "type": "object" },
+    "toolchain": { "type": "object" },
+    "origin": { "type": "object" }
+  }
+}

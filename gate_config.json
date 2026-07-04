@@ -1,0 +1,22 @@
+{
+  "schema": "live-steel-gate-config-v1",
+  "proofFrames": [8, 48, 150, 330],
+  "morphFrames": [390, 450, 540, 620],
+  "simOnlyWarmupRuns": 1,
+  "simOnlyMeasuredRuns": 20,
+  "simOnlyFramesPerRun": 600,
+  "thresholds": {
+    "dwellCoveredRatioMin": 0.78,
+    "dwellHolePreservationMin": 0.9,
+    "dwellOver128RatioMax": 0.065,
+    "dwellOver180RatioMax": 0.035,
+    "dwellBlueDominantRatioMax": 0.002,
+    "dwellJsGlintRatioMin": 0.08,
+    "dwellJsGlintRatioMax": 0.18,
+    "temporalDwell1ActiveAvgMin": 0.015,
+    "temporalDwell1ActiveP95Max": 6.0,
+    "temporalMorph1ActiveP95Max": 10.0,
+    "morphLastAvgActiveMin": 0.3,
+    "simOnlyP95MsPerStepMax": 10.0
+  }
+}
