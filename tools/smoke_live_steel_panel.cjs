@@ -20,6 +20,43 @@ async function panelSnapshot(page) {
   return page.evaluate(() => window.__liveSteelPanel.snapshot());
 }
 
+async function fieldAlphaHash(page) {
+  // FNV-1a over phrase-0 alpha bytes straight from wasm memory: the physics INPUT,
+  // upstream of render noise. Same host + same params must reproduce it exactly.
+  /* eslint-disable no-undef -- views/FIELD_MAX are page globals inside evaluate */
+  return page.evaluate(() => {
+    const v = views();
+    const a = v.alpha.slice(0, FIELD_MAX);
+    const bytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) {
+      h ^= bytes[i];
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, "0") + ":" + bytes.length;
+  });
+  /* eslint-enable no-undef */
+}
+
+async function morphPhaseWalk(page, seed) {
+  // Deterministic fast-forward through the template audit hooks — no wall-clock sleeps.
+  /* eslint-disable no-undef, no-implicit-globals -- running/views are page-global lexical bindings inside evaluate */
+  return page.evaluate((walkSeed) => {
+    running = false;
+    window.__reset(walkSeed | 0);
+    const phraseIdx = () => views().perf[2] | 0;
+    const seen = [phraseIdx()];
+    for (let block = 0; block < 12; block++) {
+      window.__steps(60);
+      const idx = phraseIdx();
+      if (seen[seen.length - 1] !== idx) seen.push(idx);
+    }
+    const pixel = window.__pixelStats();
+    return { seen, litRatio: pixel.litRatio, maxRGB: pixel.maxRGB };
+  }, seed);
+  /* eslint-enable no-undef, no-implicit-globals */
+}
+
 async function waitForPanel(page) {
   await page.waitForFunction(
     () =>
@@ -32,8 +69,11 @@ async function waitForPanel(page) {
 }
 
 async function applySinglePhraseProbe(page) {
+  await page.evaluate(() => {
+    window.__liveSteelPanel.applyPreset({ text: "codex trace", mode: "locked", autoLock: false });
+  });
+  const neutralHash = await fieldAlphaHash(page);
   const snapshot = await page.evaluate(() => {
-    window.__liveSteelPanel.setText("codex trace");
     return window.__liveSteelPanel.setLetter(1, {
       rotation: -18,
       scale: 1.36,
@@ -48,7 +88,21 @@ async function applySinglePhraseProbe(page) {
   requireCondition(letter.rotation === -18, "per-letter rotation did not persist");
   requireCondition(letter.scale === 1.36, "per-letter scale did not persist");
   requireCondition(letter.density === 1.32, "per-letter density did not persist");
-  return snapshot;
+  const patchedHash = await fieldAlphaHash(page);
+  requireCondition(
+    patchedHash !== neutralHash,
+    "per-letter patch had NO effect on the field alpha — state echoes but physics input unchanged",
+  );
+  const repatched = await page.evaluate(() =>
+    window.__liveSteelPanel.setLetter(1, { rotation: -18, scale: 1.36, x: -10, y: 4, density: 1.32 }),
+  );
+  requireCondition(Boolean(repatched), "re-apply snapshot missing");
+  const repatchedHash = await fieldAlphaHash(page);
+  requireCondition(
+    repatchedHash === patchedHash,
+    `raster path is nondeterministic on same host: ${repatchedHash} != ${patchedHash}`,
+  );
+  return { snapshot, neutralHash, patchedHash };
 }
 
 async function applyMorphProbe(page) {
@@ -67,7 +121,11 @@ async function applyMorphProbe(page) {
   requireCondition(snapshot.phrases[1] === "SOFT MACHINE", `bad morph phrase 2: ${snapshot.phrases[1]}`);
   const disabled = await page.$eval("#ls-letter-section", (node) => node.classList.contains("is-disabled"));
   requireCondition(disabled, "per-letter section should disable for multi-phrase morph");
-  return snapshot;
+  const walk = await morphPhaseWalk(page, 7331);
+  requireCondition(walk.seen.includes(0) && walk.seen.includes(1),
+    `morph never transitioned between phrases: visited ${JSON.stringify(walk.seen)}`);
+  requireCondition(walk.litRatio > 0.005, `stepped canvas too dark: litRatio=${walk.litRatio}`);
+  return { snapshot, walk };
 }
 
 async function assertCanvasAlive(page) {
@@ -98,6 +156,7 @@ async function main() {
     const singleStats = await assertCanvasAlive(page);
     const morph = await applyMorphProbe(page);
     const morphStats = await assertCanvasAlive(page);
+    const morphWalk = morph.walk;
     const dataUrl = await page.evaluate(() => window.__liveSteelPanel.exportDataUrl());
     requireCondition(dataUrl.startsWith("data:image/png;base64,"), "panel export did not return a PNG data URL");
     requireCondition(dataUrl.length > 100000, `panel export is suspiciously small: ${dataUrl.length}`);
@@ -111,9 +170,13 @@ async function main() {
     requireCondition(pageErrors.length === 0, `page errors:\n${pageErrors.join("\n")}`);
     const result = {
       panel: initial.version,
-      singlePhrase: single.phrases[0],
-      perLetterRotation: single.state.letters[1].rotation,
-      morphPhrases: morph.phrases,
+      singlePhrase: single.snapshot.phrases[0],
+      perLetterRotation: single.snapshot.state.letters[1].rotation,
+      alphaNeutral: single.neutralHash,
+      alphaPatched: single.patchedHash,
+      morphPhrases: morph.snapshot.phrases,
+      morphPhraseWalk: morphWalk.seen,
+      steppedLitRatio: morphWalk.litRatio,
       singleLitRatio: singleStats.litRatio,
       morphLitRatio: morphStats.litRatio,
       exportBytesApprox: Math.floor((dataUrl.length * 3) / 4),
