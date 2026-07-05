@@ -297,7 +297,7 @@
       fs = Math.min(FIELD_H * 0.92, fs * userScale);
       applyMetrics();
       measured = Math.max(...lines.map(line => measureChars(Array.from(line))));
-      const safeWidth = FIELD_W * 0.92;
+      const safeWidth = FIELD_W * 0.96;
       if (measured > safeWidth) {
         fs *= safeWidth / measured;
         applyMetrics();
