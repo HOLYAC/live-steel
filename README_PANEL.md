@@ -5,6 +5,8 @@ Adds a separate `live_steel_panel.html` workshop for `mf_proto_live_steel.html` 
 ## Usage
 
 Place `live_steel_panel.html` next to `mf_proto_live_steel.html` and open it. If direct file loading is blocked by the browser, click **Pick mf_proto_live_steel.html**.
+The panel starts collapsed so it does not cover the letters; click the round
+header button to expand controls, then collapse it again for viewing/export.
 
 For a fully inlined panel artifact:
 
